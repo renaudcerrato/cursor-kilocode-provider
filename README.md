@@ -6,6 +6,12 @@ This project is a custom **AI SDK provider** (`LanguageModelV3`) plus an **OpenC
 
 > **Status:** Usable end-to-end in OpenCode (auth, models, streaming, tools). See [Known limitations](#known-limitations).
 
+## Demo
+
+OpenCode driving a Cursor-routed Grok model through this provider:
+
+![OpenCode running a Grok model via cursor-opencode-provider](https://raw.githubusercontent.com/oakimov/cursor-opencode-provider/main/assets/opencode-grok.png)
+
 ## Features
 
 - **OpenCode integration** — registers a `cursor` provider with auth hooks and cached model list
