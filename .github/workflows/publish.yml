@@ -69,5 +69,24 @@ jobs:
       - name: Build
         run: bun run build
 
+      - name: Debug — OIDC claims + npm version
+        run: |
+          echo "=== runner npm version (trusted publishing needs >= 11.5.1) ==="
+          npm --version
+          echo "=== OIDC claims asserted by GitHub about this run ==="
+          node -e '
+            (async () => {
+              const url = process.env.ACTIONS_ID_TOKEN_REQUEST_URL + "&audience=npm:registry.npmjs.org";
+              const res = await fetch(url, { headers: { Authorization: "bearer " + process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN } });
+              const j = await res.json();
+              const payload = JSON.parse(Buffer.from(j.value.split(".")[1], "base64url").toString());
+              console.log(JSON.stringify(payload, null, 2));
+            })();
+          '
+          echo "=== package.json repository.url (npm requires exact match to GitHub repo) ==="
+          node -p "require('./package.json').repository.url"
+
       - name: Publish
+        env:
+          NPM_CONFIG_LOGLEVEL: verbose
         run: npm publish
