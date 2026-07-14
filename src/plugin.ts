@@ -5,11 +5,36 @@ import { readCache, writeCache, discoverModels, type ModelInfo } from "./models.
 
 const MODULE_URL = new URL("./index.js", import.meta.url).href
 
+/**
+ * Strip characters that break rendering in the OpenCode Desktop webview from a
+ * model or variant display name: HTML/markup chars (`< > & " ' \``), parentheses,
+ * Tabs/newlines collapse to single spaces; dots and unicode letters are preserved so names
+ * stay readable. Fixes https://github.com/oakimov/cursor-opencode-provider/issues/2.
+ */
+function safeLabel(value: string): string {
+  return (
+    value
+      .replace(/[()<>&"'`]/g, "")
+      .replace(/\s+/g, " ")
+      .trim() || "default"
+  )
+}
+
+function baseName(mi: ModelInfo): string {
+  return safeLabel(mi.displayName ?? mi.id)
+}
+
 function modelInfoVariants(mi: ModelInfo): Record<string, Record<string, unknown>> | undefined {
   if (mi.variants.length === 0) return undefined
   const entries: Record<string, Record<string, unknown>> = {}
+  const usedKeys = new Set<string>()
   for (const v of mi.variants) {
-    const key = v.displayName || v.key || "default"
+    const base = safeLabel(v.displayName || v.key || "default")
+    let key = base
+    let suffix = 2
+    while (usedKeys.has(key)) key = `${base}--${suffix++}`
+    usedKeys.add(key)
+
     const params: Record<string, unknown> = {}
     for (const p of v.parameterValues) {
       params[p.id] = p.value
@@ -19,9 +44,36 @@ function modelInfoVariants(mi: ModelInfo): Record<string, Record<string, unknown
   return entries
 }
 
-function modelInfoToConfig(mi: ModelInfo) {
+/**
+ * Display names shared by both a thinking and a non-thinking model. A thinking
+ * model with such a name needs a "Thinking" tag to disambiguate it from its
+ * non-thinking twin (Cursor's Claude/Fable/Sonnet families). Models whose names
+ * are already unique — including Cursor's GPT family, where the reasoning tier
+ * ("None"/"Low"/"High"…) is baked into the name — are excluded, so they aren't
+ * tagged redundantly.
+ */
+export function thinkingSuffixBaseNames(models: ModelInfo[]): Set<string> {
+  const flags = new Map<string, { hasThinking: boolean; hasNonThinking: boolean }>()
+  for (const m of models) {
+    const base = baseName(m)
+    const entry = flags.get(base) ?? { hasThinking: false, hasNonThinking: false }
+    if (m.supportsThinking) entry.hasThinking = true
+    else entry.hasNonThinking = true
+    flags.set(base, entry)
+  }
+  const ambiguous = new Set<string>()
+  for (const [base, f] of flags) if (f.hasThinking && f.hasNonThinking) ambiguous.add(base)
+  return ambiguous
+}
+
+export function modelInfoToConfig(
+  mi: ModelInfo,
+  options: { thinkingSuffix?: boolean } = {},
+) {
+  let name = baseName(mi)
+  if (options.thinkingSuffix) name += " Thinking"
   const config: Record<string, any> = {
-    name: mi.displayName ?? mi.id,
+    name,
     reasoning: mi.supportsThinking ?? false,
     tool_call: mi.supportsAgent ?? true,
     temperature: false,
@@ -41,9 +93,12 @@ export async function CursorPlugin(input: PluginInput): Promise<Hooks> {
   async function loadModels(): Promise<Record<string, any>> {
     const cached = await readCache(configDir)
     if (!cached || cached.models.length === 0) return {}
+    const ambiguous = thinkingSuffixBaseNames(cached.models)
     const models: Record<string, any> = {}
     for (const m of cached.models) {
-      models[m.id] = modelInfoToConfig(m)
+      models[m.id] = modelInfoToConfig(m, {
+        thinkingSuffix: !!m.supportsThinking && ambiguous.has(baseName(m)),
+      })
     }
     return models
   }
