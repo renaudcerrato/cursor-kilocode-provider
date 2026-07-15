@@ -8,12 +8,6 @@ This project is a custom **AI SDK provider** (`LanguageModelV3`) plus a **Kilo C
 
 > **Status:** Usable end-to-end in Kilo Code (auth, models, streaming, tools). See [Known limitations](#known-limitations).
 
-## Demo
-
-Kilo Code driving a Cursor-routed Grok model through this provider:
-
-![Kilo Code running a Grok model via cursor-kilocode-provider](https://raw.githubusercontent.com/renaudcerrato/cursor-kilocode-provider/main/assets/opencode-grok.png)
-
 ## Features
 
 - **Kilo Code integration** — registers a `cursor` provider with auth hooks and cached model list
