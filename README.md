@@ -1,5 +1,7 @@
 # cursor-opencode-provider
 
+> This is a Kilo Code fork of [oakimov/cursor-opencode-provider](https://github.com/oakimov/cursor-opencode-provider).
+
 Use [Cursor](https://cursor.com) subscription models from Kilo Code by speaking Cursor's Connect-RPC agent protocol.
 
 This project is a custom **AI SDK provider** (`LanguageModelV3`) plus a **Kilo Code plugin** that handles authentication and model discovery. Instead of calling a generic chat-completions API, it encodes and decodes Cursor's protobuf agent protocol over HTTP/2 to `agentn.global.api5.cursor.sh`.
