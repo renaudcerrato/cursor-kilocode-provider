@@ -1,20 +1,20 @@
 # cursor-opencode-provider
 
-Use [Cursor](https://cursor.com) subscription models from [OpenCode](https://opencode.ai) by speaking Cursor's Connect-RPC agent protocol.
+Use [Cursor](https://cursor.com) subscription models from Kilo Code by speaking Cursor's Connect-RPC agent protocol.
 
-This project is a custom **AI SDK provider** (`LanguageModelV3`) plus an **OpenCode plugin** that handles authentication and model discovery. Instead of calling a generic chat-completions API, it encodes and decodes Cursor's protobuf agent protocol over HTTP/2 to `agentn.global.api5.cursor.sh`.
+This project is a custom **AI SDK provider** (`LanguageModelV3`) plus a **Kilo Code plugin** that handles authentication and model discovery. Instead of calling a generic chat-completions API, it encodes and decodes Cursor's protobuf agent protocol over HTTP/2 to `agentn.global.api5.cursor.sh`.
 
-> **Status:** Usable end-to-end in OpenCode (auth, models, streaming, tools). See [Known limitations](#known-limitations).
+> **Status:** Usable end-to-end in Kilo Code (auth, models, streaming, tools). See [Known limitations](#known-limitations).
 
 ## Demo
 
-OpenCode driving a Cursor-routed Grok model through this provider:
+Kilo Code driving a Cursor-routed Grok model through this provider:
 
-![OpenCode running a Grok model via cursor-opencode-provider](https://raw.githubusercontent.com/oakimov/cursor-opencode-provider/main/assets/opencode-grok.png)
+![Kilo Code running a Grok model via cursor-opencode-provider](https://raw.githubusercontent.com/oakimov/cursor-opencode-provider/main/assets/opencode-grok.png)
 
 ## Features
 
-- **OpenCode integration** — registers a `cursor` provider with auth hooks and cached model list
+- **Kilo Code integration** — registers a `cursor` provider with auth hooks and cached model list
 - **Authentication** — browser OAuth (PKCE), or API key from [cursor.com/settings](https://cursor.com/settings)
 - **Model discovery** — fetches available models from Cursor's API and caches them locally
 - **Streaming** — bidirectional Connect-RPC stream for agent runs
@@ -24,18 +24,18 @@ OpenCode driving a Cursor-routed Grok model through this provider:
 ## Requirements
 
 - [Bun](https://bun.sh) (for development and tests)
-- [OpenCode](https://opencode.ai) with plugin support
+- Kilo Code with plugin support
 - An active Cursor account with API access
 
 ## Installation
 
 ### From npm (after publish)
 
-Add the package name to OpenCode config. OpenCode installs npm plugins with Bun at startup (cached under `~/.cache/opencode/node_modules/`):
+Add the package name to Kilo Code config under `~/.config/kilo/`:
 
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
+  "$schema": "https://app.kilo.ai/config.json",
   "plugin": ["cursor-opencode-provider"],
   "provider": {
     "cursor": {
@@ -73,26 +73,14 @@ Point config at the built files with absolute `file://` URLs:
 }
 ```
 
-## OpenCode setup
+## Kilo Code setup
 
 If the `cursor` provider block is omitted, the classic plugin auto-registers it on startup (as **Cursor Integration**) using this package's entry. Model entries are filled from the local cache after you authenticate.
-
-For OpenCode builds that use the Effect/Promise **v2** plugin API (`plugins` field), also load:
-
-```json
-{
-  "plugins": ["cursor-opencode-provider/plugin/v2"]
-}
-```
-
-Local clone equivalent: `"file:///absolute/path/to/cursor-opencode-provider/dist/plugin-v2.js"`.
-
-That entry registers the provider via `ctx.aisdk.sdk` / `ctx.aisdk.language`. Keep the classic `plugin` entry for auth.
 
 ### Authenticate
 
 ```bash
-opencode auth login
+kilo auth login
 ```
 
 Choose the **cursor** provider, then one of:
@@ -102,14 +90,14 @@ Choose the **cursor** provider, then one of:
 | **Cursor account (browser login)** | PKCE OAuth — opens cursor.com to sign in |
 | **API key** | Paste a key from [cursor.com/settings](https://cursor.com/settings) (`sk-...`) |
 
-After login, the plugin fetches your available models and writes them to `cursor-models.json` (OpenCode config directory, or `CURSOR_CONFIG_DIR` if set).
+After login, the plugin fetches your available models and writes them to `cursor-models.json` (`~/.config/kilo/`, or `CURSOR_CONFIG_DIR` if set).
 
 ### Select a model
 
 Pick a model from the cached list (for example `composer-2.5`, `default`, or a Claude/GPT variant exposed by your subscription):
 
 ```bash
-opencode run --model cursor/composer-2.5 "Hello from Cursor via OpenCode"
+kilo run --model cursor/composer-2.5 "Hello from Cursor via Kilo Code"
 ```
 
 ## Programmatic usage
@@ -132,7 +120,7 @@ Pass either `accessToken` (JWT from OAuth or key exchange) or `apiKey` (raw `sk-
 
 | Variable | Description |
 |----------|-------------|
-| `CURSOR_CONFIG_DIR` | Override directory for `cursor-models.json` cache (defaults to the OpenCode directory passed into the plugin) |
+| `CURSOR_CONFIG_DIR` | Override directory for `cursor-models.json` cache (defaults to the Kilo Code directory passed into the plugin) |
 | `CURSOR_WEBSITE_URL` | Override OAuth login base URL (default `https://cursor.com`) |
 | `CURSOR_API_BASE_URL` | Override API base for auth and model discovery (default `https://api2.cursor.sh`) |
 | `CURSOR_PROVIDER_DEBUG` | Set to `1` or `true` to enable wire-level debug logging |
@@ -153,7 +141,7 @@ bun run test:watch   # watch mode
 ## Architecture
 
 ```
-OpenCode
+Kilo Code
   └── CursorPlugin (auth, model cache, config hook)
         └── createCursor() → LanguageModelV3
               ├── session.ts  held-open Run stream + exec bridge
@@ -163,8 +151,7 @@ OpenCode
 
 | Module | Role |
 |--------|------|
-| `src/plugin.ts` | Classic OpenCode hooks: provider registration, OAuth, API key exchange, token refresh |
-| `src/plugin-v2.ts` | OpenCode Effect/Promise v2 plugin (`ctx.aisdk.*`); load via `./plugin/v2` only |
+| `src/plugin.ts` | Classic Kilo Code hooks: provider registration, OAuth, API key exchange, token refresh |
 | `src/index.ts` | `createCursor` factory; default export is `CursorPlugin` |
 | `src/language-model.ts` | AI SDK `LanguageModelV3` adapter (`doStream`, `doGenerate`) |
 | `src/session.ts` | Held-open agent Run session and pending exec correlation |
@@ -179,25 +166,22 @@ OpenCode
 |-------------|--------|
 | `cursor-opencode-provider` | `createCursor`, `CursorPlugin` (named + default) |
 | `cursor-opencode-provider/plugin` | `CursorPlugin` (classic Hooks — auth) |
-| `cursor-opencode-provider/plugin/v2` | OpenCode Effect/Promise v2 plugin (`ctx.aisdk.*`) |
-
-`CursorPluginV2` is **not** re-exported from the package root — the classic plugin loader would treat it as a broken Hooks export. Always load it via `./plugin/v2`.
 
 ## Troubleshooting
 
 | Problem | What to try |
 |---------|-------------|
-| No Cursor models in the picker | Run `opencode auth login`, choose **cursor**, then restart OpenCode so the plugin reloads `cursor-models.json`. Confirm `provider.cursor.npm` is the package name (or a built `file://…/dist/index.js`). |
+| No Cursor models in the picker | Run `kilo auth login`, choose **cursor**, then restart Kilo Code so the plugin reloads `cursor-models.json`. Confirm `provider.cursor.npm` is the package name (or a built `file://…/dist/index.js`). |
 | Auth / 401 errors mid-session | Re-login. OAuth and exchanged API-key JWTs refresh automatically when near expiry; a revoked refresh token needs a fresh login. |
 | “Too many connections from different devices” | Device IDs are derived from stable OS identifiers (same approach as the Cursor CLI). Avoid running multiple clients that invent different machine fingerprints for the same account. |
-| Empty or stale model list | Delete `cursor-models.json` under the OpenCode config dir (or the dir set by `CURSOR_CONFIG_DIR`) and re-auth / restart so models are fetched again. Cache TTL is 24h; a failed background refresh keeps serving the previous cache. |
+| Empty or stale model list | Delete `~/.config/kilo/cursor-models.json` (or the file under `CURSOR_CONFIG_DIR`), then re-authenticate and restart Kilo Code. Cache TTL is 24h; a failed background refresh keeps serving the previous cache. |
 | Stream hangs or HTTP/2 errors | Abort the turn and retry. The agent Run uses a bidirectional HTTP/2 stream to `agentn.global.api5.cursor.sh`; a dropped connection leaves the in-flight session unusable. |
 | Need wire-level logs | Set `CURSOR_PROVIDER_DEBUG=1` (optional `CURSOR_PROVIDER_DEBUG_FILE`, default `/tmp/cursor-provider-debug.log`) and reproduce the issue. |
 
 ## Known limitations
 
 - **Personal use / ToS** — this provider speaks Cursor’s private agent protocol (CLI-shaped client identity). Use only with an account you own; Cursor may change or restrict the API without notice.
-- **`request_context` from OpenCode** — each Run sends Cursor `RequestContext` built from OpenCode project context (workspace env, `AGENTS.md` / `instructions`, `.opencode` agents/skills/plugins, git, layout, plus `.claude`/`.agents` skill fallbacks). Same discovery as OpenCode — including `.cursor/` paths only when listed in `instructions`. Cursor-only cloud/sandbox marketplace surfaces are omitted.
+- **`request_context` from Kilo Code** — each Run sends Cursor `RequestContext` built from Kilo Code project context (workspace env, `AGENTS.md` / `instructions`, `.kilocode` and `.kilo` agents/skills/plugins, git, layout, plus `.claude`/`.agents` skill fallbacks). `.cursor/` paths are included only when listed in `instructions`. Cursor-only cloud/sandbox marketplace surfaces are omitted.
 - **Tool-call display stub** — semantic `tool_call_started` frames are only partially decoded. Tool execution itself goes through the exec channel and works; UI that relied solely on the display type would be incomplete.
 - **No fallback models** — if Cursor’s `AvailableModels` API is unreachable and there is no local cache, the provider exposes no models.
 

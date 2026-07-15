@@ -14,15 +14,15 @@ describe("collectRules / buildRequestContext", () => {
     root = path.join(os.tmpdir(), `cursor-ctx-${process.pid}-${Date.now()}`)
     await mkdir(root, { recursive: true })
     await writeFile(path.join(root, "AGENTS.md"), "# Project rules\nUse bun.\n")
-    await mkdir(path.join(root, ".opencode", "skills", "demo"), { recursive: true })
+    await mkdir(path.join(root, ".kilo", "skills", "demo"), { recursive: true })
     await writeFile(
-      path.join(root, ".opencode", "skills", "demo", "SKILL.md"),
+      path.join(root, ".kilo", "skills", "demo", "SKILL.md"),
       "---\nname: demo\ndescription: Demo skill\n---\n\nDo the demo.\n",
     )
     await mkdir(path.join(root, ".cursor", "rules"), { recursive: true })
-    await writeFile(path.join(root, ".cursor", "rules", "extra.md"), "cursor instruction via opencode.json")
+    await writeFile(path.join(root, ".cursor", "rules", "extra.md"), "cursor instruction via kilo.json")
     await writeFile(
-      path.join(root, "opencode.json"),
+      path.join(root, "kilo.json"),
       JSON.stringify({ instructions: [".cursor/rules/*.md"] }),
     )
   })
@@ -37,7 +37,7 @@ describe("collectRules / buildRequestContext", () => {
     expect(rules.some((r) => r.fullPath.replace(/\\/g, "/").includes("/.cursor/rules/extra.md"))).toBe(true)
   })
 
-  it("discovers .opencode skills", async () => {
+  it("discovers .kilo skills", async () => {
     const skills = await collectSkills(root, root)
     expect(skills.some((s) => s.name === "demo")).toBe(true)
   })

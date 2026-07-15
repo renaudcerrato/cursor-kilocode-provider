@@ -1,9 +1,64 @@
-import { describe, it, expect } from "bun:test"
-import { modelInfoToConfig, thinkingSuffixBaseNames } from "../src/plugin.js"
-import type { ModelInfo } from "../src/models.js"
+import { afterEach, describe, expect, it } from "bun:test"
+import { mkdir, rm } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { CursorPlugin, modelInfoToConfig, thinkingSuffixBaseNames } from "../src/plugin.js"
+import { kiloConfigDir } from "../src/config.js"
+import { readCache, writeCache, type ModelInfo } from "../src/models.js"
 
 // Characters safeLabel must remove from emitted names/keys (issue #2).
 const INVALID = new RegExp("[()<>&\"'`]")
+
+const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
+
+afterEach(async () => {
+  if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+  else process.env.XDG_CONFIG_HOME = originalXdgConfigHome
+})
+
+describe("CursorPlugin", () => {
+  it("loads cached models from Kilo's global config directory", async () => {
+    const configHome = path.join(os.tmpdir(), `kilo-plugin-test-${process.pid}-${Date.now()}`)
+    process.env.XDG_CONFIG_HOME = configHome
+    const projectDir = path.join(configHome, "project")
+    await mkdir(projectDir, { recursive: true })
+    await writeCache(kiloConfigDir(), {
+      fetchedAt: Date.now(),
+      models: [{ id: "cursor-test", variants: [] }],
+    })
+
+    try {
+      const plugin = await CursorPlugin({ directory: projectDir } as never)
+      const config: { provider?: Record<string, { models?: Record<string, unknown> }> } = {}
+      await plugin.config?.(config as never)
+
+      expect(config.provider?.cursor?.models).toHaveProperty("cursor-test")
+    } finally {
+      await rm(configHome, { recursive: true, force: true })
+    }
+  })
+
+  it("migrates a project-scoped model cache into Kilo's global config directory", async () => {
+    const configHome = path.join(os.tmpdir(), `kilo-plugin-test-${process.pid}-${Date.now()}`)
+    process.env.XDG_CONFIG_HOME = configHome
+    const projectDir = path.join(configHome, "project")
+    await mkdir(projectDir, { recursive: true })
+    await writeCache(projectDir, {
+      fetchedAt: Date.now(),
+      models: [{ id: "cursor-project-cache", variants: [] }],
+    })
+
+    try {
+      const plugin = await CursorPlugin({ directory: projectDir } as never)
+      const config: { provider?: Record<string, { models?: Record<string, unknown> }> } = {}
+      await plugin.config?.(config as never)
+
+      expect((await readCache(kiloConfigDir()))?.models[0]?.id).toBe("cursor-project-cache")
+    } finally {
+      await rm(configHome, { recursive: true, force: true })
+    }
+  })
+})
 
 describe("modelInfoToConfig", () => {
   it("strips markup-breaking chars and parens from name + variant keys, keeps names readable", () => {

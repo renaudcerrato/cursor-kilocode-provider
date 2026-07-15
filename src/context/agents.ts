@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
-import { opencodeGlobalConfigDir } from "./paths.js"
+import { kiloConfigDir } from "../config.js"
 
 export type CollectedAgent = {
   fullPath: string
@@ -74,10 +74,11 @@ async function scanAgentDir(dir: string, out: Map<string, CollectedAgent>): Prom
   }
 }
 
-/** Custom OpenCode agents from `.opencode/agents` and global config. */
+/** Custom Kilo Code agents from project config directories and global config. */
 export async function collectAgents(workspaceRoot: string): Promise<CollectedAgent[]> {
   const out = new Map<string, CollectedAgent>()
-  await scanAgentDir(path.join(workspaceRoot, ".opencode", "agents"), out)
-  await scanAgentDir(path.join(opencodeGlobalConfigDir(), "agents"), out)
+  await scanAgentDir(path.join(workspaceRoot, ".kilocode", "agents"), out)
+  await scanAgentDir(path.join(workspaceRoot, ".kilo", "agents"), out)
+  await scanAgentDir(path.join(kiloConfigDir(), "agents"), out)
   return [...out.values()]
 }

@@ -1,6 +1,6 @@
 import { readdir, stat } from "node:fs/promises"
 import path from "node:path"
-import { opencodeGlobalConfigDir } from "./paths.js"
+import { kiloConfigDir } from "../config.js"
 import type { OpencodeJson } from "./rules.js"
 
 export type CollectedPlugin = {
@@ -42,12 +42,14 @@ export async function collectPlugins(
     seen.add(id)
     out.push({ id, source: "npm" })
   }
-  for (const p of await listLocalPlugins(path.join(workspaceRoot, ".opencode", "plugins"))) {
-    if (seen.has(p.id)) continue
-    seen.add(p.id)
-    out.push(p)
+  for (const directory of [".kilocode", ".kilo"]) {
+    for (const p of await listLocalPlugins(path.join(workspaceRoot, directory, "plugins"))) {
+      if (seen.has(p.id)) continue
+      seen.add(p.id)
+      out.push(p)
+    }
   }
-  for (const p of await listLocalPlugins(path.join(opencodeGlobalConfigDir(), "plugins"))) {
+  for (const p of await listLocalPlugins(path.join(kiloConfigDir(), "plugins"))) {
     if (seen.has(p.id)) continue
     seen.add(p.id)
     out.push(p)

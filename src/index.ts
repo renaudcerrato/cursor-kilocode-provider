@@ -23,9 +23,3 @@ export function createCursor(options: CreateCursorOptions) {
 
 export { CursorPlugin }
 export default CursorPlugin
-
-// CursorPluginV2 is NOT re-exported here — see plugin-v2.ts.
-// OpenCode's legacy plugin loader (getLegacyPlugins) iterates all exports
-// and calls getServerPlugin on each; the v2 define() return is not a
-// function, causing "Plugin export is not a function". Load it via
-// the separate "cursor-opencode-provider/plugin/v2" export path.

@@ -44,7 +44,7 @@ async function walk(dir: string, depth: number, maxDepth: number, maxEntries: nu
   let count = 0
   for (const name of names) {
     if (count >= maxEntries) break
-    if (name.startsWith(".") && name !== ".opencode" && name !== ".claude" && name !== ".agents") continue
+    if (name.startsWith(".") && ![".kilocode", ".kilo", ".claude", ".agents"].includes(name)) continue
     if (SKIP.has(name)) continue
     const full = path.join(dir, name)
     let st

@@ -1,7 +1,8 @@
 import { readFile, readdir, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
-import { opencodeGlobalConfigDir, resolveHomeRelative } from "./paths.js"
+import { kiloConfigDir } from "../config.js"
+import { resolveHomeRelative } from "./paths.js"
 
 export type CollectedRule = {
   fullPath: string
@@ -25,18 +26,19 @@ async function exists(file: string): Promise<boolean> {
 }
 
 async function readJsonConfig(dir: string): Promise<OpencodeJson> {
-  for (const name of ["opencode.json", "opencode.jsonc"]) {
+  let config: OpencodeJson = {}
+  for (const name of ["config.json", "config.jsonc", "kilo.json", "kilo.jsonc", "opencode.json", "opencode.jsonc"]) {
     const file = path.join(dir, name)
     if (!(await exists(file))) continue
     try {
       const raw = await readFile(file, "utf-8")
       const stripped = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
-      return JSON.parse(stripped) as OpencodeJson
+      config = { ...config, ...(JSON.parse(stripped) as OpencodeJson) }
     } catch {
-      return {}
+      // Ignore malformed config files, as Kilo Code does for optional context.
     }
   }
-  return {}
+  return config
 }
 
 async function findGitWorktree(start: string): Promise<string> {
@@ -131,7 +133,7 @@ async function expandGlob(pattern: string, workspaceRoot: string): Promise<strin
 }
 
 export async function loadMergedConfig(workspaceRoot: string): Promise<OpencodeJson> {
-  const globalConfig = await readJsonConfig(opencodeGlobalConfigDir())
+  const globalConfig = await readJsonConfig(kiloConfigDir())
   const projectConfig = await readJsonConfig(workspaceRoot)
   return {
     ...globalConfig,
@@ -174,7 +176,7 @@ export async function collectRules(workspaceRoot: string): Promise<{
     }
   }
 
-  await add(path.join(opencodeGlobalConfigDir(), "AGENTS.md"))
+  await add(path.join(kiloConfigDir(), "AGENTS.md"))
   await add(path.join(homedir(), ".claude", "CLAUDE.md"))
 
   for (const raw of config.instructions ?? []) {

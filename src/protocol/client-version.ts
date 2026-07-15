@@ -5,6 +5,7 @@ import {
   MODEL_CACHE_TTL_MS,
   VERSION_CACHE_FILE,
 } from "../shared.js"
+import { kiloConfigDir } from "../config.js"
 
 const INSTALL_URL = "https://cursor.com/install"
 const REMOTE_TIMEOUT_MS = 5_000
@@ -92,9 +93,7 @@ function resolveCacheDir(): string | undefined {
   if (process.env.CURSOR_CONFIG_DIR) return process.env.CURSOR_CONFIG_DIR
   const home = process.env.HOME || process.env.USERPROFILE
   if (!home) return undefined
-  return process.env.XDG_CONFIG_HOME
-    ? path.join(process.env.XDG_CONFIG_HOME, "opencode")
-    : path.join(home, ".config", "opencode")
+  return kiloConfigDir()
 }
 
 function versionCachePath(): string | undefined {

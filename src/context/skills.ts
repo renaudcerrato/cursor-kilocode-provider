@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
 import { homedir } from "node:os"
-import { opencodeGlobalConfigDir } from "./paths.js"
+import { kiloConfigDir } from "../config.js"
 
 export type CollectedSkill = {
   fullPath: string
@@ -87,15 +87,16 @@ async function walkAncestorsFor(dir: string, rel: string, stop: string, out: Map
 }
 
 /**
- * Discover skills the way OpenCode does: `.opencode/skills`, global opencode,
+ * Discover skills the way Kilo Code does: `.kilocode/skills`, `.kilo/skills`, global Kilo Code,
  * plus `.claude/skills` and `.agents/skills` (project + home).
  */
 export async function collectSkills(workspaceRoot: string, worktree: string): Promise<CollectedSkill[]> {
   const out = new Map<string, CollectedSkill>()
   const home = homedir()
 
-  await walkAncestorsFor(workspaceRoot, path.join(".opencode", "skills"), worktree, out)
-  await scanSkillsRoot(path.join(opencodeGlobalConfigDir(), "skills"), out)
+  await walkAncestorsFor(workspaceRoot, path.join(".kilocode", "skills"), worktree, out)
+  await walkAncestorsFor(workspaceRoot, path.join(".kilo", "skills"), worktree, out)
+  await scanSkillsRoot(path.join(kiloConfigDir(), "skills"), out)
 
   await walkAncestorsFor(workspaceRoot, path.join(".claude", "skills"), worktree, out)
   await scanSkillsRoot(path.join(home, ".claude", "skills"), out)

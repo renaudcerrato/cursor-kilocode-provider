@@ -1,7 +1,7 @@
 {
   "name": "cursor-opencode-provider",
   "version": "0.1.2",
-  "description": "Use Cursor subscription models from OpenCode via Cursor's Connect-RPC agent protocol",
+  "description": "Use Cursor subscription models from Kilo Code via Cursor's Connect-RPC agent protocol",
   "type": "module",
   "license": "MIT",
   "author": "oakimov",
@@ -16,6 +16,8 @@
   "keywords": [
     "opencode",
     "opencode-plugin",
+    "kilo",
+    "kilocode",
     "cursor",
     "ai-sdk",
     "provider",
@@ -31,10 +33,6 @@
     "./plugin": {
       "types": "./dist/plugin.d.ts",
       "import": "./dist/plugin.js"
-    },
-    "./plugin/v2": {
-      "types": "./dist/plugin-v2.d.ts",
-      "import": "./dist/plugin-v2.js"
     }
   },
   "files": [
@@ -54,10 +52,10 @@
     "protobufjs": "^7.4.0"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "~1.17.13"
+    "@kilocode/plugin": "^7.4.7"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "~1.17.13",
+    "@kilocode/plugin": "^7.4.7",
     "@tsconfig/node22": "^22.0.1",
     "@types/node": "^22.15.3",
     "typescript": "^5.8.3"

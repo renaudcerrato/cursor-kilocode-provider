@@ -1,5 +1,6 @@
-import type { Hooks, PluginInput, AuthOAuthResult, Config } from "@opencode-ai/plugin"
+import type { Hooks, PluginInput, AuthOAuthResult, Config } from "@kilocode/plugin"
 import { CURSOR_PROVIDER_ID, CURSOR_WEBSITE_HOST, CURSOR_API_HOST } from "./shared.js"
+import { kiloConfigDir } from "./config.js"
 import { pollForTokens, exchangeApiKey, refreshAccessToken, isExpiringSoon, generatePkceParams, generatePkceChallenge, buildLoginUrl, decodeJwtPayload } from "./auth.js"
 import { readCache, writeCache, discoverModels, type ModelInfo } from "./models.js"
 
@@ -88,10 +89,16 @@ export function modelInfoToConfig(
 }
 
 export async function CursorPlugin(input: PluginInput): Promise<Hooks> {
-  const configDir = process.env.CURSOR_CONFIG_DIR || input.directory
+  const configDir = process.env.CURSOR_CONFIG_DIR || kiloConfigDir()
 
   async function loadModels(): Promise<Record<string, any>> {
-    const cached = await readCache(configDir)
+    let cached = await readCache(configDir)
+    if (!cached && !process.env.CURSOR_CONFIG_DIR && input.directory !== configDir) {
+      // Kilo Code passes a project directory to plugins. Migrate caches written
+      // there by earlier versions to the global Kilo Code config directory.
+      cached = await readCache(input.directory)
+      if (cached) await writeCache(configDir, cached).catch(() => {})
+    }
     if (!cached || cached.models.length === 0) return {}
     const ambiguous = thinkingSuffixBaseNames(cached.models)
     const models: Record<string, any> = {}

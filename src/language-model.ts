@@ -25,6 +25,7 @@ import { conversationBlobCount } from "./protocol/blob-store.js"
 import { sessionManager, type CursorSession, type Frame } from "./session.js"
 import { readCache, cacheFilePath, resolveVariantParameters, type ModelInfo } from "./models.js"
 import { buildRequestContext } from "./context/build.js"
+import { kiloConfigDir } from "./config.js"
 
 let _availableModels: ModelInfo[] | undefined
 // mtime of the cache file the last time we loaded it. Compared on each call
@@ -362,14 +363,12 @@ async function loadAvailableModels(): Promise<void> {
   } catch { /* ignore */ }
 }
 
-/** Same directory the plugin writes to (CURSOR_CONFIG_DIR, else OpenCode config). */
+/** Same directory the plugin writes to (CURSOR_CONFIG_DIR, else Kilo Code config). */
 function resolveModelCacheDir(): string | undefined {
   if (process.env.CURSOR_CONFIG_DIR) return process.env.CURSOR_CONFIG_DIR
   const home = process.env.HOME || process.env.USERPROFILE
   if (!home) return undefined
-  return process.env.XDG_CONFIG_HOME
-    ? path.join(process.env.XDG_CONFIG_HOME, "opencode")
-    : path.join(home, ".config", "opencode")
+  return kiloConfigDir()
 }
 
 /**

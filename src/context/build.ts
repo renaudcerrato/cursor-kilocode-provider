@@ -16,8 +16,8 @@ export type BuildRequestContextInput = {
 
 /**
  * Full RequestContext payload for live UMA + exec #10 reply.
- * Sourced from OpenCode discovery (and .claude/.agents skill fallbacks).
- * Honors `instructions` globs the same way OpenCode does (including `.cursor/` if listed).
+ * Sourced from Kilo Code discovery (and .claude/.agents skill fallbacks).
+ * Honors `instructions` globs the same way Kilo Code does (including `.cursor/` if listed).
  */
 export async function buildRequestContext(
   input: BuildRequestContextInput,
