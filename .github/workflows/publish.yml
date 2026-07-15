@@ -7,16 +7,16 @@
 #
 # Setup (one-time, per package — trusted publishing needs the package to exist):
 #   1. First publish is done locally to create the package:
-#        npm publish            # logged in as oakimov, 2FA prompt
+#        npm publish            # logged in as renaudcerrato, 2FA prompt
 #   2. Register this workflow as a trusted publisher (package now exists):
 #        npm install -g npm@^11.15.0          # npm trust needs >= 11.15.0
-#        npm trust github cursor-opencode-provider \
+#        npm trust github cursor-kilocode-provider \
 #          --file publish.yml \
-#          --repository oakimov/cursor-opencode-provider \
+#          --repository renaudcerrato/cursor-kilocode-provider \
 #          --allow-publish -y
 #      ...or do it via the website: npmjs.com → package → Settings →
-#      Trusted Publisher → GitHub Actions (owner oakimov, repo
-#      cursor-opencode-provider, workflow publish.yml, allow "npm publish").
+#      Trusted Publisher → GitHub Actions (owner renaudcerrato, repo
+#      cursor-kilocode-provider, workflow publish.yml, allow "npm publish").
 #
 # Publish flow (after setup):
 #   - Bump "version" in package.json, commit to main.
@@ -24,7 +24,7 @@
 #   - This workflow runs install → typecheck → test → build → npm publish (OIDC).
 #
 # If OIDC publish fails with ENEEDAUTH, check that the workflow filename
-# (publish.yml), repository (oakimov/cursor-opencode-provider), and the
+# (publish.yml), repository (renaudcerrato/cursor-kilocode-provider), and the
 # package.json "repository.url" all match what's registered on npm.
 
 name: Publish

@@ -1,21 +1,19 @@
 {
-  "name": "cursor-opencode-provider",
+  "name": "cursor-kilocode-provider",
   "version": "0.1.2",
   "description": "Use Cursor subscription models from Kilo Code via Cursor's Connect-RPC agent protocol",
   "type": "module",
   "license": "MIT",
-  "author": "oakimov",
+  "author": "renaudcerrato",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/oakimov/cursor-opencode-provider.git"
+    "url": "git+https://github.com/renaudcerrato/cursor-kilocode-provider.git"
   },
   "bugs": {
-    "url": "https://github.com/oakimov/cursor-opencode-provider/issues"
+    "url": "https://github.com/renaudcerrato/cursor-kilocode-provider/issues"
   },
-  "homepage": "https://github.com/oakimov/cursor-opencode-provider#readme",
+  "homepage": "https://github.com/renaudcerrato/cursor-kilocode-provider#readme",
   "keywords": [
-    "opencode",
-    "opencode-plugin",
     "kilo",
     "kilocode",
     "cursor",

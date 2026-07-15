@@ -797,6 +797,7 @@ export function resolveConversationId(callOptions: LanguageModelV3CallOptions): 
 
 /** Deterministic UUID (version-4 shape) from an arbitrary session key. */
 export function sessionIdToUuid(sessionId: string): string {
+  // Keep the legacy salt stable so existing Cursor conversations can continue.
   const hash = createHash("sha256").update(`cursor-opencode-provider:conv:${sessionId}`).digest()
   const bytes = Buffer.from(hash.subarray(0, 16))
   bytes[6] = (bytes[6]! & 0x0f) | 0x40

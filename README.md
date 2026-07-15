@@ -1,4 +1,4 @@
-# cursor-opencode-provider
+# cursor-kilocode-provider
 
 > This is a Kilo Code fork of [oakimov/cursor-opencode-provider](https://github.com/oakimov/cursor-opencode-provider).
 
@@ -12,7 +12,7 @@ This project is a custom **AI SDK provider** (`LanguageModelV3`) plus a **Kilo C
 
 Kilo Code driving a Cursor-routed Grok model through this provider:
 
-![Kilo Code running a Grok model via cursor-opencode-provider](https://raw.githubusercontent.com/oakimov/cursor-opencode-provider/main/assets/opencode-grok.png)
+![Kilo Code running a Grok model via cursor-kilocode-provider](https://raw.githubusercontent.com/renaudcerrato/cursor-kilocode-provider/main/assets/opencode-grok.png)
 
 ## Features
 
@@ -38,10 +38,10 @@ Add the package name to Kilo Code config under `~/.config/kilo/`:
 ```json
 {
   "$schema": "https://app.kilo.ai/config.json",
-  "plugin": ["cursor-opencode-provider"],
+  "plugin": ["cursor-kilocode-provider"],
   "provider": {
     "cursor": {
-      "npm": "cursor-opencode-provider",
+      "npm": "cursor-kilocode-provider",
       "name": "Cursor",
       "models": {}
     }
@@ -49,13 +49,13 @@ Add the package name to Kilo Code config under `~/.config/kilo/`:
 }
 ```
 
-Pin a version if you want: `"cursor-opencode-provider@0.1.2"`.
+Pin a version if you want: `"cursor-kilocode-provider@0.1.2"`.
 
 ### From a local clone
 
 ```bash
-git clone https://github.com/oakimov/cursor-opencode-provider.git
-cd cursor-opencode-provider
+git clone https://github.com/renaudcerrato/cursor-kilocode-provider.git
+cd cursor-kilocode-provider
 bun install
 bun run build
 ```
@@ -64,10 +64,10 @@ Point config at the built files with absolute `file://` URLs:
 
 ```json
 {
-  "plugin": ["file:///absolute/path/to/cursor-opencode-provider/dist/plugin.js"],
+  "plugin": ["file:///absolute/path/to/cursor-kilocode-provider/dist/plugin.js"],
   "provider": {
     "cursor": {
-      "npm": "file:///absolute/path/to/cursor-opencode-provider/dist/index.js",
+      "npm": "file:///absolute/path/to/cursor-kilocode-provider/dist/index.js",
       "name": "Cursor",
       "models": {}
     }
@@ -105,7 +105,7 @@ kilo run --model cursor/composer-2.5 "Hello from Cursor via Kilo Code"
 ## Programmatic usage
 
 ```ts
-import { createCursor } from "cursor-opencode-provider"
+import { createCursor } from "cursor-kilocode-provider"
 
 const cursor = createCursor({
   name: "cursor",
@@ -166,8 +166,8 @@ Kilo Code
 
 | Import path | Export |
 |-------------|--------|
-| `cursor-opencode-provider` | `createCursor`, `CursorPlugin` (named + default) |
-| `cursor-opencode-provider/plugin` | `CursorPlugin` (classic Hooks — auth) |
+| `cursor-kilocode-provider` | `createCursor`, `CursorPlugin` (named + default) |
+| `cursor-kilocode-provider/plugin` | `CursorPlugin` (classic Hooks — auth) |
 
 ## Troubleshooting
 

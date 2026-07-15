@@ -7,10 +7,10 @@ import { readCache, writeCache, discoverModels, type ModelInfo } from "./models.
 const MODULE_URL = new URL("./index.js", import.meta.url).href
 
 /**
- * Strip characters that break rendering in the OpenCode Desktop webview from a
+ * Strip characters that break rendering in the Kilo Code Desktop webview from a
  * model or variant display name: HTML/markup chars (`< > & " ' \``), parentheses,
  * Tabs/newlines collapse to single spaces; dots and unicode letters are preserved so names
- * stay readable. Fixes https://github.com/oakimov/cursor-opencode-provider/issues/2.
+ * stay readable.
  */
 function safeLabel(value: string): string {
   return (
