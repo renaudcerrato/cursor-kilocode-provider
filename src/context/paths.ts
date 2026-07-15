@@ -3,7 +3,8 @@ import path from "node:path"
 
 /** OpenCode global config dir (`~/.config/opencode`). */
 export function opencodeGlobalConfigDir(): string {
-  return path.join(homedir(), ".config", "opencode")
+  const home = process.env.HOME || process.env.USERPROFILE || homedir()
+  return path.join(home, ".config", "opencode")
 }
 
 export function resolveHomeRelative(p: string): string {

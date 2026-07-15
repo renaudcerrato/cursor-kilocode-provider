@@ -2,6 +2,7 @@ import type { Hooks, PluginInput, AuthOAuthResult, Config } from "@opencode-ai/p
 import { CURSOR_PROVIDER_ID, CURSOR_WEBSITE_HOST, CURSOR_API_HOST } from "./shared.js"
 import { pollForTokens, exchangeApiKey, refreshAccessToken, isExpiringSoon, generatePkceParams, generatePkceChallenge, buildLoginUrl, decodeJwtPayload } from "./auth.js"
 import { readCache, writeCache, discoverModels, type ModelInfo } from "./models.js"
+import { opencodeGlobalConfigDir } from "./context/paths.js"
 
 const MODULE_URL = new URL("./index.js", import.meta.url).href
 
@@ -88,10 +89,16 @@ export function modelInfoToConfig(
 }
 
 export async function CursorPlugin(input: PluginInput): Promise<Hooks> {
-  const configDir = process.env.CURSOR_CONFIG_DIR || input.directory
+  const configDir = process.env.CURSOR_CONFIG_DIR || opencodeGlobalConfigDir()
 
   async function loadModels(): Promise<Record<string, any>> {
-    const cached = await readCache(configDir)
+    let cached = await readCache(configDir)
+    if (!cached && !process.env.CURSOR_CONFIG_DIR && input.directory !== configDir) {
+      // Migrate caches written to the project directory by earlier versions
+      // to the global OpenCode config directory, where language-model.ts reads.
+      cached = await readCache(input.directory)
+      if (cached) await writeCache(configDir, cached).catch(() => {})
+    }
     if (!cached || cached.models.length === 0) return {}
     const ambiguous = thinkingSuffixBaseNames(cached.models)
     const models: Record<string, any> = {}
