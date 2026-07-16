@@ -1,6 +1,6 @@
 {
   "name": "cursor-kilocode-provider",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Use Cursor subscription models from Kilo Code via Cursor's Connect-RPC agent protocol",
   "type": "module",
   "license": "MIT",
