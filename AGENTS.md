@@ -92,5 +92,5 @@ When changing rule/skill discovery, keep parity with OpenCode behavior and updat
 | File | Purpose |
 |------|---------|
 | `README.md` | User-facing install, setup, troubleshooting |
-| `.agents/AGENTS.md` | Canonical agent/project context (this file) |
-| `.claude/CLAUDE.md` | Pointer to `.agents/AGENTS.md` for Claude Code |
+| `AGENTS.md` | Canonical agent/project context (this file) |
+| `.claude/CLAUDE.md` | Pointer to `AGENTS.md` for Claude Code |
