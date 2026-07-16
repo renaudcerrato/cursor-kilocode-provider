@@ -136,6 +136,11 @@ export function modelInfoToConfig(
   const context = contextTier === "long"
     ? (mi.maxContextForMaxMode ?? 1_000_000)
     : (mi.maxContext ?? 200_000)
+  // OpenCode's overflow/compaction/UI use limit.context; generation and
+  // thinking budgets use limit.output. models.dev 1M peers advertise
+  // 64k–128k output — a tiny cap makes long-context sessions feel broken
+  // even when the 1M input window is correct.
+  const output = contextTier === "long" ? 128_000 : 32_000
   const config: Record<string, any> = {
     name,
     reasoning: mi.supportsThinking ?? false,
@@ -143,7 +148,7 @@ export function modelInfoToConfig(
     temperature: false,
     limit: {
       context,
-      output: 4096,
+      output,
     },
   }
   const variantConfig = modelInfoVariants(mi, variants)

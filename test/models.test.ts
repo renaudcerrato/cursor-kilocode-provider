@@ -235,6 +235,7 @@ describe("modelInfoToConfig (context window selection)", () => {
       maxContextForMaxMode: 1000000,
     } as any)
     expect(cfg.limit.context).toBe(200000)
+    expect(cfg.limit.output).toBe(32_000)
   })
 
   it("does not infer max mode from an intrinsic *-max model id", () => {
@@ -259,6 +260,16 @@ describe("modelInfoToConfig (context window selection)", () => {
   it("falls back to 200000 when neither limit is present", () => {
     const cfg = modelInfoToConfig({ ...base, id: "unknown-model" } as any)
     expect(cfg.limit.context).toBe(200000)
+  })
+
+  it("advertises a models.dev-parity output cap for the long-context tier", () => {
+    const cfg = modelInfoToConfig({
+      ...base,
+      id: "claude-opus-4-8",
+      maxContext: 300000,
+      maxContextForMaxMode: 1000000,
+    } as any, { contextTier: "long" })
+    expect(cfg.limit).toEqual({ context: 1_000_000, output: 128_000 })
   })
 })
 
@@ -315,10 +326,10 @@ describe("modelsToConfig (context-tier materialization)", () => {
     const config = modelsToConfig([model])
 
     expect(Object.keys(config)).toEqual(["claude-opus-4-8", "claude-opus-4-8-1m"])
-    expect(config["claude-opus-4-8"].limit.context).toBe(300_000)
+    expect(config["claude-opus-4-8"].limit).toEqual({ context: 300_000, output: 32_000 })
     expect(config["claude-opus-4-8-1m"]).toMatchObject({
       name: "Opus 4.8 1M",
-      limit: { context: 1_000_000 },
+      limit: { context: 1_000_000, output: 128_000 },
       options: {
         [CURSOR_WIRE_MODEL_ID_KEY]: "claude-opus-4-8",
         [CURSOR_VARIANT_PARAMETERS_KEY]: [

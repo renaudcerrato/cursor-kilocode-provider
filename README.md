@@ -131,6 +131,7 @@ The selected variant’s Cursor parameter map is forwarded on the Run as `reques
 OpenCode’s context limit is static per model entry, while Cursor’s long-context tier is a variant parameter (`context=1m`). When a model has both a base tier and a `1m` tier, the plugin emits a separate OpenCode entry `<model-id>-1m` (for example `claude-opus-4-8-1m`) with:
 
 - `limit.context` set to the 1M window (so overflow checks and compaction match the tier)
+- `limit.output` set to `128000` (max generation tokens — not the context window; base entries use `32000`)
 - only the long-context variants in its picker
 - the real Cursor model id carried in `options.cursorModelId` (not `config.id`, which would make OpenCode merge base variants into the 1M entry)
 
