@@ -2,7 +2,7 @@ import fs from "node:fs"
 import { createHash } from "node:crypto"
 import type { LanguageModelV3, LanguageModelV3CallOptions, LanguageModelV3StreamResult, LanguageModelV3GenerateResult, LanguageModelV3StreamPart, LanguageModelV3Usage, LanguageModelV3FinishReason } from "@ai-sdk/provider"
 import type { CreateCursorOptions } from "./index.js"
-import { bidiRunStream, trace } from "./transport/connect.js"
+import { bidiRunStream, normalizeAgentRunOrigin, trace } from "./transport/connect.js"
 import { buildRunRequest, buildHeartbeat } from "./protocol/request.js"
 import { decodeFramePayload } from "./protocol/framing.js"
 import { decodeMessage } from "./protocol/messages.js"
@@ -25,18 +25,13 @@ import { sessionManager, type CursorSession, type Frame } from "./session.js"
 import { readCache, cacheFilePath, resolveVariantParameters, type ModelInfo } from "./models.js"
 import { buildRequestContext } from "./context/build.js"
 import { opencodeGlobalCacheDir } from "./context/paths.js"
-import { discoverAgentUrl } from "./agent-url.js"
+import { resolveAgentUrl } from "./agent-url.js"
+import { CURSOR_API_HOST } from "./shared.js"
 
 let _availableModels: ModelInfo[] | undefined
 // mtime of the cache file the last time we loaded it. Compared on each call
 // so discoverModels' background refresh is picked up without a process restart.
 let _availableModelsMtimeMs = -1
-
-// In-process memo of the resolved Run stream origin (agentnUrl). Resolved once
-// per process on the first startSession and reused so subsequent turns never
-// hit GetServerConfig again — region routing is near-static and a mid-session
-// change would break the held-open Run stream anyway.
-let _resolvedAgentUrl: string | undefined
 
 type V3Part = LanguageModelV3StreamPart
 
@@ -83,7 +78,7 @@ async function doStreamImpl(
   const token = await resolveBearerToken({
     accessToken: options.accessToken,
     apiKey: options.apiKey,
-    baseUrl: options.baseURL,
+    baseUrl: resolveApiBaseURL(options),
   })
 
   const prompt = callOptions.prompt
@@ -213,11 +208,15 @@ async function startSession(
 
   await loadAvailableModels()
 
-  // Resolve the region-specific Run stream origin once per process. An explicit
-  // `options.baseURL` (direct SDK / override) always wins; otherwise use the
-  // agentnUrl from GetServerConfig, cached under the OpenCode cache dir. Falls
-  // back to the hardcoded CURSOR_AGENT_HOST on any failure.
-  const agentBaseUrl = options.baseURL ?? await resolveAgentUrl(token)
+  // Resolve the region-specific Run stream origin once per process (memoized
+  // in agent-url.ts). Explicit agent host overrides skip GetServerConfig but
+  // still go through the Cursor agent-host allowlist.
+  const agentBaseUrl =
+    resolveExplicitAgentBaseURL(options) ??
+    (await resolveAgentUrl(token, {
+      apiBaseURL: resolveApiBaseURL(options),
+      telemetryEnabled: resolveTelemetryEnabled(options),
+    }))
 
   const providerOptions = callOptions.providerOptions?.cursor as Record<string, unknown> | undefined
   const reasoningEffort = providerOptions?.reasoningEffort as string | undefined
@@ -374,15 +373,28 @@ async function loadAvailableModels(): Promise<void> {
   } catch { /* ignore */ }
 }
 
-/**
- * Resolve the Run stream origin via GetServerConfig, memoized per process.
- * The first startSession awaits the cache/fetch; subsequent calls reuse the
- * resolved URL so a region change never breaks a held-open Run stream.
- */
-async function resolveAgentUrl(token: string): Promise<string> {
-  if (_resolvedAgentUrl) return _resolvedAgentUrl
-  _resolvedAgentUrl = await discoverAgentUrl(token, opencodeGlobalCacheDir())
-  return _resolvedAgentUrl
+function resolveApiBaseURL(options: CreateCursorOptions): string {
+  return options.apiBaseURL ?? process.env.CURSOR_API_BASE_URL ?? `https://${CURSOR_API_HOST}`
+}
+
+function resolveTelemetryEnabled(options: CreateCursorOptions): boolean {
+  return options.telemetryEnabled ?? isTruthyEnv(process.env.CURSOR_GET_SERVER_CONFIG_TELEMETRY)
+}
+
+function resolveExplicitAgentBaseURL(options: CreateCursorOptions): string | undefined {
+  const raw = options.agentBaseURL ?? options.baseURL
+  if (!raw) return undefined
+  const normalized = normalizeAgentRunOrigin(raw)
+  if (!normalized) {
+    throw new Error(
+      "Invalid Cursor agent base URL override: expected https://agentn.<region>.api5.cursor.sh",
+    )
+  }
+  return normalized
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  return value === "1" || value === "true"
 }
 
 /**

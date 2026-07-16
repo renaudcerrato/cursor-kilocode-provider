@@ -1,4 +1,4 @@
-import { CURSOR_API_HOST, CURSOR_AGENT_HOST, CONNECT_PROTOCOL_VERSION, SERVER_CONFIG_PATH } from "../shared.js"
+import { CURSOR_API_HOST, CONNECT_PROTOCOL_VERSION, SERVER_CONFIG_PATH } from "../shared.js"
 import { encodeFrame, streamFrames } from "../protocol/framing.js"
 import { createCursorChecksumHeader } from "../protocol/checksum.js"
 import { getDeviceIds } from "../protocol/device-id.js"
@@ -7,8 +7,10 @@ import http2 from "node:http2"
 import fs from "node:fs"
 
 const API_BASE = `https://${CURSOR_API_HOST}`
-const AGENT = CURSOR_AGENT_HOST
 
+function resolveApiBaseURL(options: { apiBaseURL?: string; baseURL?: string }): string {
+  return new URL(options.apiBaseURL ?? options.baseURL ?? API_BASE).origin
+}
 // Wire-level diagnostics. Opt in with CURSOR_PROVIDER_DEBUG=1 (or "true").
 // Writes to CURSOR_PROVIDER_DEBUG_FILE (default /tmp/cursor-provider-debug.log).
 // Truncated once per process. Captures h2 response status, parsed frames, and
@@ -55,9 +57,9 @@ export function buildBaseHeaders(
 
 export async function unaryAvailableModels(
   token: string,
-  options: { baseURL?: string; headers?: Record<string, string> } = {},
+  options: { apiBaseURL?: string; baseURL?: string; headers?: Record<string, string> } = {},
 ): Promise<Record<string, unknown>> {
-  const base = options.baseURL ?? API_BASE
+  const base = resolveApiBaseURL(options)
   const url = `${base}/aiserver.v1.AiService/AvailableModels`
   const clientVersion = await resolveClientVersion()
   const headers = buildBaseHeaders(token, clientVersion, options.headers)
@@ -82,26 +84,53 @@ export async function unaryAvailableModels(
 
 // ── Unary (GetServerConfig) ──
 
+/** Cursor Run stream hosts returned by GetServerConfig (agentn.<region>.api5.cursor.sh). */
+export function isAllowedAgentHost(hostname: string): boolean {
+  return /^agentn\.([a-z0-9-]+\.)?api5\.cursor\.sh$/i.test(hostname)
+}
+
+/**
+ * Normalize a GetServerConfig agent URL to an https origin.
+ * Returns null for missing, malformed, non-https, or non-Cursor agent hosts.
+ */
+export function normalizeAgentRunOrigin(raw: string | undefined): string | null {
+  if (raw === undefined || raw === null) return null
+  const trimmed = String(raw).trim()
+  if (!trimmed) return null
+  try {
+    const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+    const parsed = new URL(withScheme)
+    if (parsed.protocol !== "https:") return null
+    if (parsed.username || parsed.password) return null
+    if (!isAllowedAgentHost(parsed.hostname)) return null
+    return parsed.origin
+  } catch {
+    return null
+  }
+}
+
+
 /**
  * Fetch the Cursor server config (a Connect unary RPC on the API host) and
  * return the `agentUrlConfig.agentnUrl` field — the region-specific Run stream
  * origin the server routes this account/team to (e.g. `agentn.us.api5.cursor.sh`).
  *
- * The hardcoded `CURSOR_AGENT_HOST` (`agentn.global.api5.cursor.sh`) is a
- * legacy/default host that silently rejects some accounts with a 200 + empty
- * close ("This region is not yet available for your team"). This call replaces
- * that guess with the authoritative URL the Cursor CLI and IDE both use.
- * Falls back to `CURSOR_AGENT_HOST` if the field is missing or the request fails.
+ * Region-routed accounts can be silently rejected by the legacy global host, so
+ * this lookup fails closed instead of substituting any host on error. If Cursor
+ * returns a valid global `agentn.*.api5.cursor.sh` origin, it is still accepted
+ * as the authoritative response.
  */
 export async function fetchAgentUrl(
   token: string,
-  options: { baseURL?: string; headers?: Record<string, string> } = {},
+  options: { apiBaseURL?: string; baseURL?: string; telemetryEnabled?: boolean } = {},
 ): Promise<string> {
-  const base = options.baseURL ?? API_BASE
+  const base = resolveApiBaseURL(options)
   const url = `${base}${SERVER_CONFIG_PATH}`
   const clientVersion = await resolveClientVersion()
-  const headers = buildBaseHeaders(token, clientVersion, options.headers)
+  // Match Cursor CLI: GetServerConfig uses base headers only — session headers belong on Run.
+  const headers = buildBaseHeaders(token, clientVersion)
 
+  trace(`GetServerConfig POST ${url}`)
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -109,7 +138,7 @@ export async function fetchAgentUrl(
       "content-type": "application/json",
       accept: "application/json",
     },
-    body: JSON.stringify({ telem_enabled: true }),
+    body: JSON.stringify({ telem_enabled: options.telemetryEnabled ?? false }),
   })
 
   if (!res.ok) {
@@ -119,7 +148,20 @@ export async function fetchAgentUrl(
 
   const body = (await res.json()) as Record<string, unknown>
   const cfg = body.agentUrlConfig as { agentnUrl?: string; agentUrl?: string } | undefined
-  return cfg?.agentnUrl || cfg?.agentUrl || `https://${CURSOR_AGENT_HOST}`
+  const raw = cfg?.agentnUrl || cfg?.agentUrl
+  const normalized = normalizeAgentRunOrigin(raw)
+  trace(
+    `GetServerConfig reply: agentnUrl=${cfg?.agentnUrl ?? "<missing>"} ` +
+      `agentUrl=${cfg?.agentUrl ?? "<missing>"} → ${normalized ?? "<invalid>"}`,
+  )
+  if (!normalized) {
+    throw new Error(
+      raw
+        ? "GetServerConfig returned an invalid Cursor agent URL"
+        : "GetServerConfig response missing agentUrlConfig.agentnUrl",
+    )
+  }
+  return normalized
 }
 
 // ── Bidi (Run stream) ──
@@ -143,16 +185,19 @@ const _http2Connecting = new Map<string, Promise<http2.ClientHttp2Session>>()
 const CONNECT_TIMEOUT_MS = 15_000
 
 /** Resolve the HTTP/2 connect origin for a Run stream (exported for tests). */
-export function resolveAgentOrigin(baseURL?: string): string {
-  // baseURL may be https://host or https://host:port — http2.connect accepts both.
-  return (baseURL ? new URL(baseURL) : new URL(`https://${AGENT}`)).origin
+export function resolveAgentOrigin(baseURL: string): string {
+  const origin = normalizeAgentRunOrigin(baseURL)
+  if (!origin) {
+    throw new Error("Cursor Run stream requires an allowlisted Cursor agent base URL")
+  }
+  return origin
 }
 
 function dropSession(origin: string, session: http2.ClientHttp2Session): void {
   if (_http2Sessions.get(origin) === session) _http2Sessions.delete(origin)
 }
 
-function getSession(baseURL?: string): Promise<http2.ClientHttp2Session> {
+function getSession(baseURL: string): Promise<http2.ClientHttp2Session> {
   const origin = resolveAgentOrigin(baseURL)
   const existing = _http2Sessions.get(origin)
   if (existing && !existing.destroyed && !existing.closed) {
@@ -202,7 +247,7 @@ function getSession(baseURL?: string): Promise<http2.ClientHttp2Session> {
 
 export async function bidiRunStream(
   token: string,
-  options: { signal?: AbortSignal; baseURL?: string; headers?: Record<string, string> } = {},
+  options: { signal?: AbortSignal; baseURL: string; headers?: Record<string, string> },
 ): Promise<BidiStream> {
   const [session, clientVersion] = await Promise.all([
     getSession(options.baseURL),

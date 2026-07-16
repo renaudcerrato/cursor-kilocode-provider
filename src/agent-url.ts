@@ -1,79 +1,81 @@
-import { AGENT_URL_CACHE_FILE, MODEL_CACHE_TTL_MS, CURSOR_AGENT_HOST } from "./shared.js"
-import { fetchAgentUrl } from "./transport/connect.js"
-import { readFile, writeFile, mkdir } from "node:fs/promises"
-import { existsSync } from "node:fs"
-import path from "node:path"
+import { createHash } from "node:crypto"
+import { fetchAgentUrl, trace } from "./transport/connect.js"
+import { CURSOR_API_HOST } from "./shared.js"
 
-export type AgentUrlCache = {
-  agentnUrl: string
-  fetchedAt: number
+const DEFAULT_API_BASE = `https://${CURSOR_API_HOST}`
+
+// In-process memo of the region-specific Run stream origin (agentnUrl). Resolved
+// once per process — the auth loader warms it, and the first startSession reuses
+// it — and held for the process lifetime. Region routing is near-static, and
+// re-resolving mid-session would break a held-open bidi Run stream anyway.
+//
+// Unlike the models/version caches this is NOT persisted to disk. A wrong agent
+// host is fatal and silent (HTTP 200 + immediate close, "This region is not
+// available for your team"), so persisting it would risk pinning the process —
+// or the next process — to a stale region or the legacy global host that some
+// accounts reject. Resolving fresh per process is cheap (one unary RPC on the
+// API host) and self-heals after a Cursor-side region migration on restart.
+//
+function normalizeApiBaseURL(baseURL: string | undefined): string {
+  if (!baseURL) return DEFAULT_API_BASE
+  return new URL(baseURL).origin
 }
 
-export function isAgentUrlCacheFresh(cache: AgentUrlCache, ttlMs = MODEL_CACHE_TTL_MS): boolean {
-  return Date.now() - cache.fetchedAt < ttlMs
+function resolveCacheKey(token: string, options: { apiBaseURL?: string; baseURL?: string; telemetryEnabled?: boolean }): string {
+  const tokenHash = createHash("sha256").update(token).digest("hex").slice(0, 16)
+  return `${tokenHash}|${normalizeApiBaseURL(options.apiBaseURL ?? options.baseURL)}|telem:${options.telemetryEnabled === true}`
 }
 
-export function agentUrlCacheFilePath(cacheDir: string): string {
-  return path.join(cacheDir, AGENT_URL_CACHE_FILE)
-}
-
-export async function readAgentUrlCache(cacheDir: string): Promise<AgentUrlCache | null> {
-  const filePath = agentUrlCacheFilePath(cacheDir)
-  try {
-    if (!existsSync(filePath)) return null
-    const data = await readFile(filePath, "utf-8")
-    const parsed = JSON.parse(data) as Partial<AgentUrlCache>
-    if (typeof parsed.agentnUrl !== "string" || typeof parsed.fetchedAt !== "number") return null
-    return { agentnUrl: parsed.agentnUrl, fetchedAt: parsed.fetchedAt }
-  } catch {
-    return null
-  }
-}
-
-export async function writeAgentUrlCache(cacheDir: string, cache: AgentUrlCache): Promise<void> {
-  const filePath = agentUrlCacheFilePath(cacheDir)
-  await mkdir(path.dirname(filePath), { recursive: true })
-  await writeFile(filePath, JSON.stringify(cache, null, 2), "utf-8")
-}
+const _resolved = new Map<string, string>()
+// In-flight fetches share the same key as resolved URLs so concurrent callers dedup per account.
+const _inflight = new Map<string, Promise<string>>()
 
 /**
- * Resolve the Run stream origin for this account, mirroring `discoverModels`:
- *  - fresh cache → return it; fire-and-forget background refresh
- *  - stale/missing cache → await fetch, write, return
- *  - fetch fails → fall back to the hardcoded `CURSOR_AGENT_HOST` (never throw)
+ * Resolve the Run stream origin for this account via the `GetServerConfig`
+ * Connect RPC. Memoized for the process lifetime.
  *
- * Region routing changes rarely (account migration / team switch), so this
- * reuses `MODEL_CACHE_TTL_MS` (24h) rather than introducing a new TTL.
+ *   - already resolved → return the memo (no fetch)
+ *   - otherwise → fetch `agentUrlConfig.agentnUrl` (then `agentUrl`), memoize, return
+ *   - fetch fails / no valid `agentUrlConfig` → throw (no global-host fallback)
+ *
+ * Concurrent callers share a single in-flight fetch.
  */
-export async function discoverAgentUrl(
+export async function resolveAgentUrl(
   token: string,
-  cacheDir: string,
-  options: { baseURL?: string; headers?: Record<string, string> } = {},
+  options: { apiBaseURL?: string; baseURL?: string; telemetryEnabled?: boolean } = {},
 ): Promise<string> {
-  const cached = await readAgentUrlCache(cacheDir)
-
-  if (cached && isAgentUrlCacheFresh(cached)) {
-    void fetchAgentUrl(token, options)
-      .then((agentnUrl) => writeAgentUrlCache(cacheDir, { agentnUrl, fetchedAt: Date.now() }))
-      .catch(() => { /* background refresh failure is non-fatal */ })
-    return cached.agentnUrl
+  const cacheKey = resolveCacheKey(token, options)
+  const memo = _resolved.get(cacheKey)
+  if (memo) {
+    trace(`agent-url: reuse in-process memo → ${memo}`)
+    return memo
+  }
+  const inflight = _inflight.get(cacheKey)
+  if (inflight) {
+    trace("agent-url: awaiting in-flight GetServerConfig")
+    return inflight
   }
 
-  if (cached) {
+  const promise = (async () => {
     try {
-      const agentnUrl = await fetchAgentUrl(token, options)
-      await writeAgentUrlCache(cacheDir, { agentnUrl, fetchedAt: Date.now() })
-      return agentnUrl
-    } catch {
-      return cached.agentnUrl
+      const url = await fetchAgentUrl(token, options)
+      _resolved.set(cacheKey, url)
+      trace(`agent-url: resolved via GetServerConfig → ${url}`)
+      return url
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      trace(`agent-url: GetServerConfig failed (${reason}); no fallback agent host will be used`)
+      throw err
+    } finally {
+      _inflight.delete(cacheKey)
     }
-  }
+  })()
+  _inflight.set(cacheKey, promise)
+  return promise
+}
 
-  try {
-    const agentnUrl = await fetchAgentUrl(token, options)
-    await writeAgentUrlCache(cacheDir, { agentnUrl, fetchedAt: Date.now() })
-    return agentnUrl
-  } catch {
-    return `https://${CURSOR_AGENT_HOST}`
-  }
+/** Reset the in-process memo. Tests only. */
+export function resetAgentUrlCache(): void {
+  _resolved.clear()
+  _inflight.clear()
 }
