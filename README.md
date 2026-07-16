@@ -2,7 +2,7 @@
 
 Use [Cursor](https://cursor.com) subscription models from [OpenCode](https://opencode.ai) by speaking Cursor's Connect-RPC agent protocol.
 
-This project is a custom **AI SDK provider** (`LanguageModelV3`) plus an **OpenCode plugin** that handles authentication and model discovery. Instead of calling a generic chat-completions API, it encodes and decodes Cursor's protobuf agent protocol over HTTP/2 to `agentn.global.api5.cursor.sh`.
+This project is a custom **AI SDK provider** (`LanguageModelV3`) plus an **OpenCode plugin** that handles authentication and model discovery. Instead of calling a generic chat-completions API, it encodes and decodes Cursor's protobuf agent protocol over HTTP/2 to Cursor's agent backend.
 
 > **Status:** Usable end-to-end in OpenCode (auth, models, streaming, tools). See [Known limitations](#known-limitations).
 
@@ -144,10 +144,10 @@ Pass either `accessToken` (JWT from OAuth or key exchange) or `apiKey` (raw `sk-
 | `CURSOR_API_BASE_URL` | Override API base for auth and model discovery (default `https://api2.cursor.sh`) |
 | `CURSOR_PROVIDER_DEBUG` | Set to `1` or `true` to enable wire-level debug logging |
 | `CURSOR_PROVIDER_DEBUG_FILE` | Debug log path (default `/tmp/cursor-provider-debug.log`) |
-| `XDG_CACHE_HOME` | When set, model/version caches go under `$XDG_CACHE_HOME/opencode/` instead of `~/.cache/opencode/` |
+| `XDG_CACHE_HOME` | When set, model/version/**agent-url** caches go under `$XDG_CACHE_HOME/opencode/` instead of `~/.cache/opencode/` |
 | `XDG_DATA_HOME` | When set, OpenCode `auth.json` is read from `$XDG_DATA_HOME/opencode/` instead of `~/.local/share/opencode/` |
 
-`createCursor({ baseURL })` also overrides the agent Run host (default `https://agentn.global.api5.cursor.sh`).
+`createCursor({ baseURL })` overrides the agent Run host. When unset, the provider resolves the host from Cursor's `GetServerConfig` API (`agentUrlConfig.agentnUrl`, region-specific — e.g. `agentn.us.api5.cursor.sh`) and caches it under `~/.cache/opencode/cursor-agent-url.json` for 24h. If that fetch fails, it falls back to `https://agentn.global.api5.cursor.sh`.
 
 ## Development
 
@@ -167,7 +167,7 @@ OpenCode
         └── createCursor() → LanguageModelV3
               ├── session.ts  held-open Run stream + exec bridge
               ├── protocol/   protobuf messages, framing, tools, thinking
-              └── transport/  Connect-RPC over HTTP/2 to agentn.global.api5.cursor.sh
+              └── transport/  Connect-RPC over HTTP/2 to Cursor's agent backend
 ```
 
 | Module | Role |
@@ -179,6 +179,7 @@ OpenCode
 | `src/session.ts` | Held-open agent Run session and pending exec correlation |
 | `src/auth.ts` | PKCE OAuth, API key exchange, JWT refresh |
 | `src/models.ts` | `AvailableModels` fetch and `cursor-models.json` cache |
+| `src/agent-url.ts` | `GetServerConfig` fetch and `cursor-agent-url.json` cache (region-specific Run host) |
 | `src/transport/connect.ts` | HTTP/2 bidi stream and unary RPC calls |
 | `src/protocol/` | Protobuf encode/decode, checksum/device ids, tool-call mapping |
 
@@ -200,7 +201,8 @@ OpenCode
 | Auth / 401 errors mid-session | Re-login. OAuth and exchanged API-key JWTs refresh automatically when near expiry; a revoked refresh token needs a fresh login. |
 | “Too many connections from different devices” | Device IDs are derived from stable OS identifiers (same approach as the Cursor CLI). Avoid running multiple clients that invent different machine fingerprints for the same account. |
 | Empty or stale model list | Delete `~/.cache/opencode/cursor-models.json` (or under `$XDG_CACHE_HOME/opencode/`) and restart OpenCode. Existing Cursor auth is enough to refill the cache; re-login only if auth itself is broken. Cache TTL is 24h; a failed background refresh keeps serving the previous cache. |
-| Stream hangs or HTTP/2 errors | Abort the turn and retry. The agent Run uses a bidirectional HTTP/2 stream to `agentn.global.api5.cursor.sh`; a dropped connection leaves the in-flight session unusable. |
+| Stream hangs or HTTP/2 errors | Abort the turn and retry. The agent Run uses a bidirectional HTTP/2 stream; a dropped connection leaves the in-flight session unusable. |
+| No response / silent 200 + close | The provider resolves the Run host from `GetServerConfig` (`agentUrlConfig.agentnUrl`). If that resolution failed (network/region), it fell back to `agentn.global.api5.cursor.sh`, which some accounts reject silently ("This region is not yet available for your team"). Delete `~/.cache/opencode/cursor-agent-url.json` and restart to force a fresh resolution; set `CURSOR_PROVIDER_DEBUG=1` to confirm the resolved host in the debug log. |
 | Need wire-level logs | Set `CURSOR_PROVIDER_DEBUG=1` (optional `CURSOR_PROVIDER_DEBUG_FILE`, default `/tmp/cursor-provider-debug.log`) and reproduce the issue. |
 
 ## Known limitations

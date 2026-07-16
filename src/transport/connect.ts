@@ -1,4 +1,4 @@
-import { CURSOR_API_HOST, CURSOR_AGENT_HOST, CONNECT_PROTOCOL_VERSION } from "../shared.js"
+import { CURSOR_API_HOST, CURSOR_AGENT_HOST, CONNECT_PROTOCOL_VERSION, SERVER_CONFIG_PATH } from "../shared.js"
 import { encodeFrame, streamFrames } from "../protocol/framing.js"
 import { createCursorChecksumHeader } from "../protocol/checksum.js"
 import { getDeviceIds } from "../protocol/device-id.js"
@@ -78,6 +78,48 @@ export async function unaryAvailableModels(
   }
 
   return (await res.json()) as Record<string, unknown>
+}
+
+// ── Unary (GetServerConfig) ──
+
+/**
+ * Fetch the Cursor server config (a Connect unary RPC on the API host) and
+ * return the `agentUrlConfig.agentnUrl` field — the region-specific Run stream
+ * origin the server routes this account/team to (e.g. `agentn.us.api5.cursor.sh`).
+ *
+ * The hardcoded `CURSOR_AGENT_HOST` (`agentn.global.api5.cursor.sh`) is a
+ * legacy/default host that silently rejects some accounts with a 200 + empty
+ * close ("This region is not yet available for your team"). This call replaces
+ * that guess with the authoritative URL the Cursor CLI and IDE both use.
+ * Falls back to `CURSOR_AGENT_HOST` if the field is missing or the request fails.
+ */
+export async function fetchAgentUrl(
+  token: string,
+  options: { baseURL?: string; headers?: Record<string, string> } = {},
+): Promise<string> {
+  const base = options.baseURL ?? API_BASE
+  const url = `${base}${SERVER_CONFIG_PATH}`
+  const clientVersion = await resolveClientVersion()
+  const headers = buildBaseHeaders(token, clientVersion, options.headers)
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      ...headers,
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({ telem_enabled: true }),
+  })
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "")
+    throw new Error(`GetServerConfig failed: ${res.status} ${res.statusText}${text ? ` - ${text.slice(0, 200)}` : ""}`)
+  }
+
+  const body = (await res.json()) as Record<string, unknown>
+  const cfg = body.agentUrlConfig as { agentnUrl?: string; agentUrl?: string } | undefined
+  return cfg?.agentnUrl || cfg?.agentUrl || `https://${CURSOR_AGENT_HOST}`
 }
 
 // ── Bidi (Run stream) ──

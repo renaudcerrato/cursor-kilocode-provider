@@ -5,6 +5,7 @@ import { pollForTokens, exchangeApiKey, refreshAccessToken, isExpiringSoon, gene
 import { readCache, discoverModels, isCacheFresh, type ModelInfo } from "./models.js"
 import { opencodeGlobalCacheDir } from "./context/paths.js"
 import { readStoredAuth, type StoredAuth } from "./context/auth-store.js"
+import { discoverAgentUrl } from "./agent-url.js"
 
 const MODULE_URL = new URL("./index.js", import.meta.url).href
 
@@ -321,6 +322,11 @@ export async function CursorPlugin(input: PluginInput): Promise<Hooks> {
             // (fire-and-forget often loses the race on short-lived CLI commands).
             await discoverModels(accessToken, cacheDir).catch(() => { /* non-fatal */ })
           }
+          // Resolve the region-specific Run stream origin so the first turn
+          // never hits the wrong agentn host (silent 200 + close). Best-effort:
+          // a failure falls back to the hardcoded CURSOR_AGENT_HOST inside
+          // discoverAgentUrl, so this must never block the loader.
+          await discoverAgentUrl(accessToken, cacheDir).catch(() => { /* non-fatal */ })
         }
 
         return {

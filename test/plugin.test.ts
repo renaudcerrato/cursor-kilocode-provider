@@ -257,6 +257,11 @@ describe("loadModels on cache miss", () => {
           models: [{ name: "fetched-model", clientDisplayName: "Fetched" }],
         })
       }
+      if (url.includes("GetServerConfig")) {
+        return Response.json({
+          agentUrlConfig: { agentnUrl: "https://agentn.us.api5.cursor.sh" },
+        })
+      }
       if (url.includes("cursor.com/install")) {
         return new Response(INSTALLER_FIXTURE, { status: 200 })
       }
@@ -488,6 +493,11 @@ describe("loadModels on cache miss", () => {
         availableModelsCalls += 1
         return Response.json({
           models: [{ name: "fetched-model", clientDisplayName: "Fetched" }],
+        })
+      }
+      if (url.includes("GetServerConfig")) {
+        return Response.json({
+          agentUrlConfig: { agentnUrl: "https://agentn.us.api5.cursor.sh" },
         })
       }
       if (url.includes("cursor.com/install")) {

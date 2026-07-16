@@ -25,11 +25,18 @@ import { sessionManager, type CursorSession, type Frame } from "./session.js"
 import { readCache, cacheFilePath, resolveVariantParameters, type ModelInfo } from "./models.js"
 import { buildRequestContext } from "./context/build.js"
 import { opencodeGlobalCacheDir } from "./context/paths.js"
+import { discoverAgentUrl } from "./agent-url.js"
 
 let _availableModels: ModelInfo[] | undefined
 // mtime of the cache file the last time we loaded it. Compared on each call
 // so discoverModels' background refresh is picked up without a process restart.
 let _availableModelsMtimeMs = -1
+
+// In-process memo of the resolved Run stream origin (agentnUrl). Resolved once
+// per process on the first startSession and reused so subsequent turns never
+// hit GetServerConfig again — region routing is near-static and a mid-session
+// change would break the held-open Run stream anyway.
+let _resolvedAgentUrl: string | undefined
 
 type V3Part = LanguageModelV3StreamPart
 
@@ -206,6 +213,12 @@ async function startSession(
 
   await loadAvailableModels()
 
+  // Resolve the region-specific Run stream origin once per process. An explicit
+  // `options.baseURL` (direct SDK / override) always wins; otherwise use the
+  // agentnUrl from GetServerConfig, cached under the OpenCode cache dir. Falls
+  // back to the hardcoded CURSOR_AGENT_HOST on any failure.
+  const agentBaseUrl = options.baseURL ?? await resolveAgentUrl(token)
+
   const providerOptions = callOptions.providerOptions?.cursor as Record<string, unknown> | undefined
   const reasoningEffort = providerOptions?.reasoningEffort as string | undefined
   const maxMode = !!(providerOptions?.maxMode ?? false)
@@ -217,7 +230,7 @@ async function startSession(
   // that signal when a turn ends with tool-calls; the Cursor stream must stay
   // open until we write the exec results on the next doStream.
   const stream = await bidiRunStream(token, {
-    baseURL: options.baseURL,
+    baseURL: agentBaseUrl,
     headers: options.headers,
   })
   // Build the tool descriptors once — advertised in AgentRunRequest #4 mcp_tools
@@ -359,6 +372,17 @@ async function loadAvailableModels(): Promise<void> {
       _availableModelsMtimeMs = mtime
     }
   } catch { /* ignore */ }
+}
+
+/**
+ * Resolve the Run stream origin via GetServerConfig, memoized per process.
+ * The first startSession awaits the cache/fetch; subsequent calls reuse the
+ * resolved URL so a region change never breaks a held-open Run stream.
+ */
+async function resolveAgentUrl(token: string): Promise<string> {
+  if (_resolvedAgentUrl) return _resolvedAgentUrl
+  _resolvedAgentUrl = await discoverAgentUrl(token, opencodeGlobalCacheDir())
+  return _resolvedAgentUrl
 }
 
 /**
