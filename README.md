@@ -71,7 +71,7 @@ Point config at the built files with absolute `file://` URLs:
 
 ## Kilo Code setup
 
-If the `cursor` provider block is omitted, the classic plugin auto-registers it on startup (as **Cursor Integration**) using this package's entry. Model entries are filled from the local cache after you authenticate.
+If the `cursor` provider block is omitted, the classic plugin auto-registers it on startup (as **Cursor Integration**) using this package's entry. Model entries come from the local cache, which is filled after auth and again on startup when the cache is empty but credentials remain.
 
 ### Authenticate
 
@@ -86,7 +86,15 @@ Choose the **cursor** provider, then one of:
 | **Cursor account (browser login)** | PKCE OAuth — opens cursor.com to sign in |
 | **API key** | Paste a key from [cursor.com/settings](https://cursor.com/settings) (`sk-...`) |
 
-After login, the plugin fetches your available models and writes them to `cursor-models.json` (`~/.config/kilo/`, or `CURSOR_CONFIG_DIR` if set).
+After login, the plugin fetches your available models and writes them to `~/.cache/kilo/cursor-models.json` (or `$XDG_CACHE_HOME/kilo/` when set). On later startups, if that cache is missing or empty but Cursor auth is still present, the plugin fetches again during config load.
+
+### Paths (XDG)
+
+| Kind | Default | Override |
+|------|---------|----------|
+| Model / version **cache** | `~/.cache/kilo/` | `$XDG_CACHE_HOME/kilo/` |
+| Kilo Code **auth** (`auth.json`) | `~/.local/share/kilo/` | `$XDG_DATA_HOME/kilo/` |
+| Kilo Code **config** (`kilo.json`, AGENTS, skills, …) | `~/.config/kilo/` | `$XDG_CONFIG_HOME` |
 
 ### Select a model
 
@@ -116,11 +124,12 @@ Pass either `accessToken` (JWT from OAuth or key exchange) or `apiKey` (raw `sk-
 
 | Variable | Description |
 |----------|-------------|
-| `CURSOR_CONFIG_DIR` | Override directory for `cursor-models.json` cache (defaults to the Kilo Code directory passed into the plugin) |
 | `CURSOR_WEBSITE_URL` | Override OAuth login base URL (default `https://cursor.com`) |
 | `CURSOR_API_BASE_URL` | Override API base for auth and model discovery (default `https://api2.cursor.sh`) |
 | `CURSOR_PROVIDER_DEBUG` | Set to `1` or `true` to enable wire-level debug logging |
 | `CURSOR_PROVIDER_DEBUG_FILE` | Debug log path (default `/tmp/cursor-provider-debug.log`) |
+| `XDG_CACHE_HOME` | When set, model/version caches go under `$XDG_CACHE_HOME/kilo/` instead of `~/.cache/kilo/` |
+| `XDG_DATA_HOME` | When set, Kilo Code `auth.json` is read from `$XDG_DATA_HOME/kilo/` instead of `~/.local/share/kilo/` |
 
 `createCursor({ baseURL })` also overrides the agent Run host (default `https://agentn.global.api5.cursor.sh`).
 
@@ -167,10 +176,10 @@ Kilo Code
 
 | Problem | What to try |
 |---------|-------------|
-| No Cursor models in the picker | Run `kilo auth login`, choose **cursor**, then restart Kilo Code so the plugin reloads `cursor-models.json`. Confirm `provider.cursor.npm` is the package name (or a built `file://…/dist/index.js`). |
+| No Cursor models in the picker | Confirm Cursor auth (`kilo auth login` → **cursor**). Restart Kilo Code — if auth is present and the cache is empty, models are fetched on startup. Confirm `provider.cursor.npm` is the package name (or a built `file://…/dist/index.js`). |
 | Auth / 401 errors mid-session | Re-login. OAuth and exchanged API-key JWTs refresh automatically when near expiry; a revoked refresh token needs a fresh login. |
 | “Too many connections from different devices” | Device IDs are derived from stable OS identifiers (same approach as the Cursor CLI). Avoid running multiple clients that invent different machine fingerprints for the same account. |
-| Empty or stale model list | Delete `~/.config/kilo/cursor-models.json` (or the file under `CURSOR_CONFIG_DIR`), then re-authenticate and restart Kilo Code. Cache TTL is 24h; a failed background refresh keeps serving the previous cache. |
+| Empty or stale model list | Delete `~/.cache/kilo/cursor-models.json` (or under `$XDG_CACHE_HOME/kilo/`) and restart Kilo Code. Existing Cursor auth is enough to refill the cache; re-login only if auth itself is broken. Cache TTL is 24h; a failed background refresh keeps serving the previous cache. |
 | Stream hangs or HTTP/2 errors | Abort the turn and retry. The agent Run uses a bidirectional HTTP/2 stream to `agentn.global.api5.cursor.sh`; a dropped connection leaves the in-flight session unusable. |
 | Need wire-level logs | Set `CURSOR_PROVIDER_DEBUG=1` (optional `CURSOR_PROVIDER_DEBUG_FILE`, default `/tmp/cursor-provider-debug.log`) and reproduce the issue. |
 

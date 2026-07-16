@@ -1,4 +1,3 @@
-import path from "node:path"
 import fs from "node:fs"
 import { createHash } from "node:crypto"
 import type { LanguageModelV3, LanguageModelV3CallOptions, LanguageModelV3StreamResult, LanguageModelV3GenerateResult, LanguageModelV3StreamPart, LanguageModelV3Usage, LanguageModelV3FinishReason } from "@ai-sdk/provider"
@@ -25,12 +24,12 @@ import { conversationBlobCount } from "./protocol/blob-store.js"
 import { sessionManager, type CursorSession, type Frame } from "./session.js"
 import { readCache, cacheFilePath, resolveVariantParameters, type ModelInfo } from "./models.js"
 import { buildRequestContext } from "./context/build.js"
-import { kiloConfigDir } from "./config.js"
+import { kiloGlobalCacheDir } from "./config.js"
 
 let _availableModels: ModelInfo[] | undefined
 // mtime of the cache file the last time we loaded it. Compared on each call
 // so discoverModels' background refresh is picked up without a process restart.
-let _availableModelsMtimeMs = 0
+let _availableModelsMtimeMs = -1
 
 type V3Part = LanguageModelV3StreamPart
 
@@ -343,10 +342,9 @@ export function findContinuationSession(
 }
 
 async function loadAvailableModels(): Promise<void> {
-  const configDir = resolveModelCacheDir()
-  if (!configDir) return
+  const cacheDir = kiloGlobalCacheDir()
   try {
-    const filePath = cacheFilePath(configDir)
+    const filePath = cacheFilePath(cacheDir)
     let mtime = 0
     try {
       const stat = await fs.promises.stat(filePath)
@@ -356,19 +354,11 @@ async function loadAvailableModels(): Promise<void> {
     }
     // Re-read when the file changed (discoverModels background refresh).
     if (mtime !== _availableModelsMtimeMs) {
-      const cached = await readCache(configDir)
+      const cached = await readCache(cacheDir)
       _availableModels = cached?.models
       _availableModelsMtimeMs = mtime
     }
   } catch { /* ignore */ }
-}
-
-/** Same directory the plugin writes to (CURSOR_CONFIG_DIR, else Kilo Code config). */
-function resolveModelCacheDir(): string | undefined {
-  if (process.env.CURSOR_CONFIG_DIR) return process.env.CURSOR_CONFIG_DIR
-  const home = process.env.HOME || process.env.USERPROFILE
-  if (!home) return undefined
-  return kiloConfigDir()
 }
 
 /**
