@@ -5,6 +5,7 @@ import path from "node:path"
 import { CursorPlugin, modelInfoToConfig, thinkingSuffixBaseNames } from "../src/plugin.js"
 import { readCache, writeCache, type ModelInfo } from "../src/models.js"
 import { resetClientVersionCache } from "../src/protocol/client-version.js"
+import { resetAgentUrlCache } from "../src/agent-url.js"
 
 // Characters safeLabel must remove from emitted names/keys (issue #2).
 const INVALID = new RegExp("[()<>&\"'`]")
@@ -13,6 +14,7 @@ const originalHome = process.env.HOME
 const originalXdgCache = process.env.XDG_CACHE_HOME
 const originalXdgData = process.env.XDG_DATA_HOME
 const originalAuthContent = process.env.KILO_AUTH_CONTENT
+const originalTelemetry = process.env.CURSOR_GET_SERVER_CONFIG_TELEMETRY
 
 afterEach(() => {
   if (originalHome === undefined) delete process.env.HOME
@@ -23,6 +25,8 @@ afterEach(() => {
   else process.env.XDG_DATA_HOME = originalXdgData
   if (originalAuthContent === undefined) delete process.env.KILO_AUTH_CONTENT
   else process.env.KILO_AUTH_CONTENT = originalAuthContent
+  if (originalTelemetry === undefined) delete process.env.CURSOR_GET_SERVER_CONFIG_TELEMETRY
+  else process.env.CURSOR_GET_SERVER_CONFIG_TELEMETRY = originalTelemetry
 })
 
 describe("CursorPlugin config hook", () => {
@@ -244,6 +248,8 @@ describe("loadModels on cache miss", () => {
   let dataDir: string
   let realFetch: typeof globalThis.fetch
   let availableModelsCalls: number
+  let serverConfigCalls: number
+  let serverConfigBodies: string[]
   let refreshCalls: number
   let persisted: unknown[]
 
@@ -272,17 +278,21 @@ describe("loadModels on cache miss", () => {
     delete process.env.XDG_CACHE_HOME
     delete process.env.XDG_DATA_HOME
     delete process.env.KILO_AUTH_CONTENT
+    delete process.env.CURSOR_GET_SERVER_CONFIG_TELEMETRY
     projectDir = path.join(fakeHome, "project")
     cacheDir = path.join(fakeHome, ".cache", "kilo")
     dataDir = path.join(fakeHome, ".local", "share", "kilo")
     await mkdir(projectDir, { recursive: true })
     availableModelsCalls = 0
+    serverConfigCalls = 0
+    serverConfigBodies = []
     refreshCalls = 0
     persisted = []
     realFetch = globalThis.fetch
     resetClientVersionCache()
+    resetAgentUrlCache()
 
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.includes("/auth/token")) {
         refreshCalls += 1
@@ -297,6 +307,13 @@ describe("loadModels on cache miss", () => {
           models: [{ name: "fetched-model", clientDisplayName: "Fetched" }],
         })
       }
+      if (url.includes("GetServerConfig")) {
+        serverConfigCalls += 1
+        serverConfigBodies.push(typeof init?.body === "string" ? init.body : "")
+        return Response.json({
+          agentUrlConfig: { agentnUrl: "https://agentn.us.api5.cursor.sh" },
+        })
+      }
       if (url.includes("cursor.com/install")) {
         return new Response(INSTALLER_FIXTURE, { status: 200 })
       }
@@ -307,6 +324,7 @@ describe("loadModels on cache miss", () => {
   afterEach(async () => {
     globalThis.fetch = realFetch
     resetClientVersionCache()
+    resetAgentUrlCache()
     await rm(fakeHome, { recursive: true, force: true })
   })
 
@@ -395,6 +413,11 @@ describe("loadModels on cache miss", () => {
       if (url.includes("/auth/token")) {
         refreshCalls += 1
         return new Response("nope", { status: 500 })
+      }
+      if (url.includes("GetServerConfig")) {
+        return Response.json({
+          agentUrlConfig: { agentnUrl: "https://agentn.us.api5.cursor.sh" },
+        })
       }
       if (url.includes("cursor.com/install")) {
         return new Response(INSTALLER_FIXTURE, { status: 200 })
@@ -500,6 +523,34 @@ describe("loadModels on cache miss", () => {
 
     // Fresh cache from config — no second AvailableModels (and no background kick).
     expect(availableModelsCalls).toBe(1)
+    expect(serverConfigCalls).toBe(1)
+    expect(JSON.parse(serverConfigBodies[0])).toEqual({ telem_enabled: false })
+  })
+
+  it("loader honors CURSOR_GET_SERVER_CONFIG_TELEMETRY for agent-url warmup", async () => {
+    process.env.CURSOR_GET_SERVER_CONFIG_TELEMETRY = "1"
+    await writeAuth({
+      type: "oauth",
+      access: fakeJwt(3600),
+      refresh: "refresh-tok",
+      expires: Date.now() + 3_600_000,
+    })
+
+    const plugin = await CursorPlugin(pluginInput())
+    const config: { provider?: Record<string, { models?: Record<string, unknown> }> } = {}
+    await plugin.config?.(config as never)
+
+    const auth = plugin.auth
+    if (!auth || !("loader" in auth) || !auth.loader) throw new Error("missing loader")
+    await auth.loader(async () => ({
+      type: "oauth",
+      access: fakeJwt(3600),
+      refresh: "refresh-tok",
+      expires: Date.now() + 3_600_000,
+    }), {} as never)
+
+    expect(serverConfigCalls).toBe(1)
+    expect(JSON.parse(serverConfigBodies[0])).toEqual({ telem_enabled: true })
   })
 
   it("loader falls back to session token when getAuth refresh fails after config already refreshed", async () => {
@@ -528,6 +579,11 @@ describe("loadModels on cache miss", () => {
         availableModelsCalls += 1
         return Response.json({
           models: [{ name: "fetched-model", clientDisplayName: "Fetched" }],
+        })
+      }
+      if (url.includes("GetServerConfig")) {
+        return Response.json({
+          agentUrlConfig: { agentnUrl: "https://agentn.us.api5.cursor.sh" },
         })
       }
       if (url.includes("cursor.com/install")) {
