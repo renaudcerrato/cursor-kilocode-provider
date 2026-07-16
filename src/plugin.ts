@@ -1,5 +1,6 @@
 import type { Hooks, PluginInput, AuthOAuthResult, Config } from "@kilocode/plugin"
 import type { Auth } from "@kilocode/sdk/v2"
+import { convert as convertHtmlToText } from "html-to-text"
 import { CURSOR_PROVIDER_ID, CURSOR_WEBSITE_HOST, CURSOR_API_HOST } from "./shared.js"
 import { pollForTokens, exchangeApiKey, refreshAccessToken, isExpiringSoon, generatePkceParams, generatePkceChallenge, buildLoginUrl, decodeJwtPayload } from "./auth.js"
 import { readCache, discoverModels, isCacheFresh, type ModelInfo } from "./models.js"
@@ -9,14 +10,25 @@ import { readStoredAuth, type StoredAuth } from "./context/auth-store.js"
 const MODULE_URL = new URL("./index.js", import.meta.url).href
 
 /**
- * Strip characters that break rendering in the Kilo Code Desktop webview from a
- * model or variant display name: HTML/markup chars (`< > & " ' \``), parentheses,
- * Tabs/newlines collapse to single spaces; dots and unicode letters are preserved so names
- * stay readable.
+ * Render a model or variant display name as plain text for the Kilo Code config.
+ *
+ * Cursor's AvailableModels API embeds HTML markup in display names (e.g.
+ * `Opus 4.8 <span style="color: var(--cursor-text-tertiary);">Low</span>`) so its
+ * own webview can style the reasoning-tier suffix. Kilo Code renders model names
+ * as plain text, so we use `html-to-text` to:
+ *   1. Strip tag markup while preserving inner text (e.g. the "Low" suffix) and
+ *      decode HTML entities (`&amp;` → `&`).
+ *   2. Drop any remaining markup-breaking chars (`< > & " ' \``) and parens that
+ *      the converter may pass through verbatim, as a safety net for the webview.
+ *   3. Collapse whitespace; keep dots and unicode letters so names stay readable.
  */
 function safeLabel(value: string): string {
+  const text = convertHtmlToText(value, {
+    wordwrap: false,
+    preserveNewlines: false,
+  })
   return (
-    value
+    text
       .replace(/[()<>&"'`]/g, "")
       .replace(/\s+/g, " ")
       .trim() || "default"

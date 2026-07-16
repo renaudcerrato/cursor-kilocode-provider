@@ -79,10 +79,17 @@ describe("CursorPlugin config hook", () => {
 })
 
 describe("modelInfoToConfig", () => {
-  it("strips markup-breaking chars and parens from name + variant keys, keeps names readable", () => {
+  it("strips HTML tags and markup-breaking chars from name + variant keys, keeps inner text readable", () => {
+    // Cursor's AvailableModels API returns variant displayNames with embedded
+    // <span> markup for styling the reasoning-tier suffix in its own webview:
+    //   "Opus 4.8 <span style=\"color: var(--cursor-text-tertiary);\">Low</span>"
+    // Kilo Code renders names as plain text, so the <span> wrapper must be
+    // removed while preserving the inner "Low" label (the whole point of the
+    // suffix). A naive char-class strip left tag residue like
+    // "span style=color: var--cursor-text-tertiary;;Low/span".
     const mi: ModelInfo = {
       id: "claude-opus-4-8",
-      displayName: 'Claude <opus> "4.8"',
+      displayName: "Opus 4.8",
       supportsThinking: false,
       supportsAgent: true,
       maxContext: 300000,
@@ -90,14 +97,14 @@ describe("modelInfoToConfig", () => {
       variants: [
         {
           key: "claude-opus-4-8",
-          displayName: "Claude Opus 4.8 (Low)",
+          displayName: 'Opus 4.8 <span style="color: var(--cursor-text-tertiary);">Low</span>',
           isDefaultNonMax: true,
           isDefaultMax: false,
           parameterValues: [{ id: "effort", value: "low" }],
         },
         {
           key: "claude-opus-4-8",
-          displayName: "Claude Opus 4.8 (Max)",
+          displayName: 'Opus 4.8 <span style="color: var(--cursor-text-tertiary);">Max</span>',
           isDefaultNonMax: false,
           isDefaultMax: true,
           parameterValues: [{ id: "effort", value: "max" }],
@@ -107,16 +114,36 @@ describe("modelInfoToConfig", () => {
 
     const config = modelInfoToConfig(mi)
 
-    // Model name: < > " removed, readable text preserved.
-    expect(config.name).toBe("Claude opus 4.8")
+    // Model name: clean base name, no markup chars.
+    expect(config.name).toBe("Opus 4.8")
     expect(config.name).not.toMatch(INVALID)
+    expect(config.name).not.toContain("span")
+    expect(config.name).not.toContain("style")
 
-    // Variant keys: parens removed, no markup chars, unique, params intact.
+    // Variant keys: <span> wrapper stripped, inner "Low"/"Max" preserved,
+    // no markup chars, unique, params intact.
     const keys = Object.keys(config.variants)
-    expect(keys).toEqual(["Claude Opus 4.8 Low", "Claude Opus 4.8 Max"])
-    for (const k of keys) expect(k).not.toMatch(INVALID)
-    expect(config.variants["Claude Opus 4.8 Low"]).toEqual({ effort: "low" })
-    expect(config.variants["Claude Opus 4.8 Max"]).toEqual({ effort: "max" })
+    expect(keys).toEqual(["Opus 4.8 Low", "Opus 4.8 Max"])
+    for (const k of keys) {
+      expect(k).not.toMatch(INVALID)
+      expect(k).not.toContain("span")
+      expect(k).not.toContain("style")
+    }
+    expect(config.variants["Opus 4.8 Low"]).toEqual({ effort: "low" })
+    expect(config.variants["Opus 4.8 Max"]).toEqual({ effort: "max" })
+  })
+
+  it("strips a standalone HTML tag (tag name removed, surrounding text kept)", () => {
+    const mi: ModelInfo = {
+      id: "m",
+      displayName: 'Claude <opus> "4.8"',
+      variants: [],
+    }
+    const config = modelInfoToConfig(mi)
+    // <opus> parses as an HTML tag — its name is removed, surrounding text kept;
+    // the quotes are then stripped by the safety-net char-class strip.
+    expect(config.name).toBe("Claude 4.8")
+    expect(config.name).not.toMatch(INVALID)
   })
 
   it("leaves already-clean names unchanged and omits variants when none exist", () => {
@@ -124,6 +151,19 @@ describe("modelInfoToConfig", () => {
     const config = modelInfoToConfig(mi)
     expect(config.name).toBe("GPT 5")
     expect(config.variants).toBeUndefined()
+  })
+
+  it("decodes HTML entities in display names (regression vs regex strip)", () => {
+    // A pure regex tag strip left entities like &amp; untouched; html-to-text
+    // decodes them so the name reads correctly.
+    const mi: ModelInfo = {
+      id: "m",
+      displayName: "Sonnet 5 &amp; friends",
+      variants: [],
+    }
+    const config = modelInfoToConfig(mi)
+    expect(config.name).toBe("Sonnet 5 friends")
+    expect(config.name).not.toMatch(INVALID)
   })
 
   it("disambiguates variant keys that collide after sanitization", () => {
