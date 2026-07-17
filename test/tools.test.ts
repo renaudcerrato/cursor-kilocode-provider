@@ -8,9 +8,12 @@ import {
   buildToolCallPart,
   parseExecIdFromToolCallId,
   toolsToDescriptors,
+  toolsToMcpDescriptors,
+  resolveToolServerIdentity,
+  mcpRealToolName,
   detectExecVariantField,
-  buildRawEmptyExecReply,
   buildRequestContextResult,
+  buildMcpStateResult,
   buildTypedExecResult,
   unwrapReadOutput,
   REQUEST_CONTEXT_RESULT_FIELD,
@@ -30,6 +33,69 @@ function mcpArgEntry(key: string, value: unknown): Uint8Array {
   return new Uint8Array(out)
 }
 
+/** Independent canonical agent.v1 ExecServerMessage #28 fixture. */
+function canonicalSubagentExecMessage(): Uint8Array {
+  const text = new TextEncoder()
+  const args: number[] = []
+  const exec: number[] = []
+  const writeVarint = (out: number[], n: number) => {
+    let v = n >>> 0
+    while (v > 0x7f) { out.push((v & 0x7f) | 0x80); v >>>= 7 }
+    out.push(v)
+  }
+  const writeString = (out: number[], field: number, value: string) => {
+    const bytes = text.encode(value)
+    writeVarint(out, (field << 3) | 2)
+    writeVarint(out, bytes.length)
+    out.push(...bytes)
+  }
+  writeString(args, 1, "task-call-34")
+  writeString(args, 2, "explore")
+  writeString(args, 3, "cursor-model")
+  writeString(args, 4, "Inspect recent logs and identify the root cause")
+  writeString(args, 6, "ses_previous")
+  writeVarint(args, (7 << 3) | 0); writeVarint(args, 1)
+  writeVarint(exec, (1 << 3) | 0); writeVarint(exec, 34)
+  writeVarint(exec, (28 << 3) | 2); writeVarint(exec, args.length); exec.push(...args)
+  return Uint8Array.from(exec)
+}
+
+describe("resolveToolServerIdentity", () => {
+  it("keeps builtins under the default server", () => {
+    expect(resolveToolServerIdentity("read")).toEqual({
+      server: "opencode",
+      toolName: "read",
+      opencodeName: "read",
+    })
+    expect(resolveToolServerIdentity("todowrite")).toEqual({
+      server: "opencode",
+      toolName: "todowrite",
+      opencodeName: "todowrite",
+    })
+  })
+
+  it("uses only configured MCP server ids and prefers the longest match", () => {
+    expect(resolveToolServerIdentity("github_create_pull_request", "opencode", ["github"])).toEqual({
+      server: "github",
+      toolName: "create_pull_request",
+      opencodeName: "github_create_pull_request",
+    })
+    expect(resolveToolServerIdentity("my_server_lookup", "opencode", ["my", "my_server"])).toEqual({
+      server: "my_server",
+      toolName: "lookup",
+      opencodeName: "my_server_lookup",
+    })
+  })
+
+  it("keeps unknown underscore-containing custom tools under opencode", () => {
+    expect(resolveToolServerIdentity("custom_helper")).toEqual({
+      server: "opencode",
+      toolName: "custom_helper",
+      opencodeName: "custom_helper",
+    })
+  })
+})
+
 describe("toolsToDescriptors", () => {
   it("builds request_context descriptors with composite names", () => {
     const d = toolsToDescriptors([
@@ -43,10 +109,83 @@ describe("toolsToDescriptors", () => {
     expect((d[0].input_schema as Uint8Array).length).toBeGreaterThan(0)
   })
 
+  it("preserves real MCP server identity on flat descriptors", () => {
+    const d = toolsToDescriptors([
+      { name: "read", description: "Read" },
+      { name: "github_create_pull_request", description: "Open a PR" },
+    ], "opencode", ["github"])
+    expect(d[0].provider_identifier).toBe("opencode")
+    expect(d[0].name).toBe("opencode-read")
+    expect(d[1].provider_identifier).toBe("github")
+    expect(d[1].tool_name).toBe("create_pull_request")
+    expect(d[1].name).toBe("github-create_pull_request")
+  })
+
   it("defaults a missing schema to an empty object schema", () => {
     const d = toolsToDescriptors([{ name: "x" }])
     expect((d[0].input_schema as Uint8Array).length).toBeGreaterThan(0)
     expect(d[0].description).toBe("")
+  })
+})
+
+describe("toolsToMcpDescriptors", () => {
+  it("splits mcp_descriptors by real server, builtins under opencode", () => {
+    const d = toolsToMcpDescriptors([
+      { name: "read", description: "Read" },
+      { name: "github_create_pull_request", description: "Open a PR" },
+      { name: "github_get_me", description: "Who am I" },
+      { name: "brave_web_search", description: "Search" },
+      { name: "bash", description: "Shell" },
+    ], "opencode", ["github", "brave"])
+    expect(d.map((x) => x.server_identifier)).toEqual(["opencode", "github", "brave"])
+    expect(d[0].server_name).toBe("opencode")
+    expect((d[0].tools as Array<{ tool_name: string }>).map((t) => t.tool_name)).toEqual([
+      "read",
+      "bash",
+    ])
+    expect((d[1].tools as Array<{ tool_name: string }>).map((t) => t.tool_name)).toEqual([
+      "create_pull_request",
+      "get_me",
+    ])
+    expect((d[2].tools as Array<{ tool_name: string }>).map((t) => t.tool_name)).toEqual([
+      "web_search",
+    ])
+  })
+
+  it("returns no descriptors for an empty tool list", () => {
+    expect(toolsToMcpDescriptors([])).toEqual([])
+  })
+})
+
+describe("mcpRealToolName", () => {
+  it("reconstructs OpenCode MCP ids from provider + bare tool", () => {
+    expect(
+      mcpRealToolName({
+        provider_identifier: "github",
+        tool_name: "create_pull_request",
+        name: "github-create_pull_request",
+      }),
+    ).toBe("github_create_pull_request")
+  })
+
+  it("keeps builtin tool_name bare under opencode", () => {
+    expect(mcpRealToolName({ provider_identifier: "opencode", tool_name: "read" })).toBe("read")
+  })
+
+  it("falls back from composite name when tool_name is missing", () => {
+    expect(mcpRealToolName({ name: "github-create_pull_request" })).toBe(
+      "github_create_pull_request",
+    )
+    expect(mcpRealToolName({ name: "opencode-read" })).toBe("read")
+  })
+
+  it("does not double-prefix when tool_name is already namespaced", () => {
+    expect(
+      mcpRealToolName({
+        provider_identifier: "github",
+        tool_name: "github_create_pull_request",
+      }),
+    ).toBe("github_create_pull_request")
   })
 })
 
@@ -72,6 +211,9 @@ describe("mapExecServerToToolName", () => {
   it("maps mcp_args → mcp", () => {
     expect(mapExecServerToToolName("mcp_args")).toBe("mcp")
   })
+  it("maps subagent_args → task", () => {
+    expect(mapExecServerToToolName("subagent_args")).toBe("task")
+  })
   it("returns undefined for unknown", () => {
     expect(mapExecServerToToolName("unknown")).toBeUndefined()
   })
@@ -84,6 +226,9 @@ describe("mapToolNameToExecField", () => {
   it("maps bash → shell_stream_args", () => {
     expect(mapToolNameToExecField("bash")).toBe("shell_stream_args")
   })
+  it("maps task → subagent_args", () => {
+    expect(mapToolNameToExecField("task")).toBe("subagent_args")
+  })
 })
 
 describe("mapCursorArgsToOpencode", () => {
@@ -94,6 +239,22 @@ describe("mapCursorArgsToOpencode", () => {
   it("remaps write path/file_text → filePath/content", () => {
     const r = mapCursorArgsToOpencode("write", { path: "/a.ts", file_text: "hi" })
     expect(r).toEqual({ toolName: "write", args: { filePath: "/a.ts", content: "hi" } })
+  })
+  it("preserves empty write and replacement content", () => {
+    expect(mapCursorArgsToOpencode("write", { path: "/empty.txt", content: "" })).toEqual({
+      toolName: "write",
+      args: { filePath: "/empty.txt", content: "" },
+    })
+    expect(
+      mapCursorArgsToOpencode("edit", {
+        path: "/a.ts",
+        old_string: "remove me",
+        new_string: "",
+      }),
+    ).toEqual({
+      toolName: "edit",
+      args: { filePath: "/a.ts", oldString: "remove me", newString: "" },
+    })
   })
   it("remaps shell working_directory → workdir", () => {
     const r = mapCursorArgsToOpencode("bash", {
@@ -178,6 +339,101 @@ describe("parseExecServerMessage", () => {
     expect(result!.toolName).toBe("write")
     expect(result!.args).toEqual({ filePath: "/out.txt", content: "hello pi" })
     expect(result!.resultField).toBe("pi_write_result")
+  })
+
+  it("decodes canonical field #28 and maps it to OpenCode task", () => {
+    const esm = decodeMessage<any>("ExecServerMessage", canonicalSubagentExecMessage())
+    const result = parseExecServerMessage(esm)
+    expect(result).toMatchObject({
+      id: 34,
+      toolName: "task",
+      resultField: "subagent_result",
+      args: {
+        description: "Inspect recent logs and identify",
+        prompt: "Inspect recent logs and identify the root cause",
+        subagent_type: "explore",
+        task_id: "ses_previous",
+        background: true,
+      },
+    })
+    expect(result?.localError).toBeUndefined()
+  })
+
+  it("rejects a subagent exec missing required OpenCode task fields", () => {
+    const result = parseExecServerMessage({ id: 34, subagent_args: { prompt: "Inspect" } })
+    expect(result?.toolName).toBe("task")
+    expect(result?.resultField).toBe("subagent_result")
+    expect(result?.localError).toContain("missing a required prompt or subagent type")
+  })
+
+  it("maps every canonical Pi exec request to its offset result field", () => {
+    const cases = [
+      {
+        request: "pi_read_args",
+        raw: { path: "/tmp/a.ts", offset: 2, limit: 10 },
+        toolName: "read",
+        args: { filePath: "/tmp/a.ts", offset: 2, limit: 10 },
+        result: "pi_read_result",
+      },
+      {
+        request: "pi_bash_args",
+        raw: { command: "echo hi", timeout: 1.5 },
+        toolName: "bash",
+        args: { command: "echo hi", timeout: 1.5 },
+        result: "pi_bash_result",
+      },
+      {
+        request: "pi_edit_args",
+        raw: { path: "/tmp/a.ts", edits: [{ old_text: "a", new_text: "b" }] },
+        toolName: "edit",
+        args: { filePath: "/tmp/a.ts", oldString: "a", newString: "b" },
+        result: "pi_edit_result",
+      },
+      {
+        request: "pi_grep_args",
+        raw: { pattern: "needle", path: "/tmp", glob: "*.ts" },
+        toolName: "grep",
+        args: { pattern: "needle", path: "/tmp", include: "*.ts" },
+        result: "pi_grep_result",
+      },
+      {
+        request: "pi_find_args",
+        raw: { pattern: "*.ts", path: "/tmp" },
+        toolName: "glob",
+        args: { pattern: "*.ts", path: "/tmp" },
+        result: "pi_find_result",
+      },
+      {
+        request: "pi_ls_args",
+        raw: { path: "/tmp", limit: 20 },
+        toolName: "read",
+        args: { filePath: "/tmp", limit: 20 },
+        result: "pi_ls_result",
+      },
+    ] as const
+
+    for (const c of cases) {
+      const parsed = parseExecServerMessage({ id: 45, [c.request]: c.raw })
+      expect(parsed?.toolName, c.request).toBe(c.toolName)
+      expect(parsed?.args, c.request).toEqual(c.args)
+      expect(parsed?.resultField, c.request).toBe(c.result)
+      expect(parsed?.localError, c.request).toBeUndefined()
+    }
+  })
+
+  it("returns a typed local error for an unrepresentable multi-edit Pi request", () => {
+    const parsed = parseExecServerMessage({
+      id: 47,
+      pi_edit_args: {
+        path: "/tmp/a.ts",
+        edits: [
+          { old_text: "a", new_text: "b" },
+          { old_text: "c", new_text: "d" },
+        ],
+      },
+    })
+    expect(parsed?.resultField).toBe("pi_edit_result")
+    expect(parsed?.localError).toContain("cannot be represented safely")
   })
 
   it("parses ls_args as OpenCode read", () => {
@@ -324,6 +580,68 @@ describe("parseExecServerMessage", () => {
 })
 
 describe("buildExecClientMessages", () => {
+  it("returns canonical SubagentSuccess from OpenCode task output", () => {
+    const frames = buildExecClientMessages({
+      execId: 34,
+      resultField: "subagent_result",
+      output: '<task id="ses_child" state="completed">\n<task_result>\nFound the cause.\n</task_result>\n</task>',
+      toolName: "task",
+    })
+    const ec = decodeMessage<any>("AgentClientMessage", frames[0]).exec_client_message
+    expect(ec.id).toBe(34)
+    expect(ec.subagent_result.success).toMatchObject({
+      agent_id: "ses_child",
+      final_message: "Found the cause.",
+      tool_call_count: 0,
+      background_reason: 0,
+    })
+    expect(frames).toHaveLength(2)
+  })
+
+  it("returns canonical SubagentError from OpenCode task failure output", () => {
+    const frames = buildExecClientMessages({
+      execId: 35,
+      resultField: "subagent_result",
+      output: '<task id="ses_child" state="error">\n<task_error>\nAgent failed.\n</task_error>\n</task>',
+      toolName: "task",
+    })
+    const result = decodeMessage<any>("AgentClientMessage", frames[0])
+      .exec_client_message.subagent_result
+    expect(result.error).toEqual({ agent_id: "ses_child", error: "Agent failed." })
+    expect(result.success).toBeUndefined()
+  })
+
+  it("parses OpenCode task output when state precedes id", () => {
+    const frames = buildExecClientMessages({
+      execId: 36,
+      resultField: "subagent_result",
+      output: '<task state="completed" id="ses_child">\n<task_result>\nDone.\n</task_result>\n</task>',
+      toolName: "task",
+    })
+    const success = decodeMessage<any>("AgentClientMessage", frames[0])
+      .exec_client_message.subagent_result.success
+    expect(success).toMatchObject({
+      agent_id: "ses_child",
+      final_message: "Done.",
+      background_reason: 0,
+    })
+  })
+
+  it("marks asynchronous OpenCode task launch as background USER_REQUEST", () => {
+    const frames = buildExecClientMessages({
+      execId: 37,
+      resultField: "subagent_result",
+      output: '<task id="ses_bg" name="explore" state="running">',
+      toolName: "task",
+    })
+    const success = decodeMessage<any>("AgentClientMessage", frames[0])
+      .exec_client_message.subagent_result.success
+    expect(success).toMatchObject({
+      agent_id: "ses_bg",
+      background_reason: 2,
+    })
+  })
+
   it("uses read_result success oneof (agent.v1), not flat content", () => {
     const frames = buildExecClientMessages({
       execId: 1,
@@ -363,6 +681,26 @@ describe("buildExecClientMessages", () => {
     expect(ec.id).toBe(49)
     expect(ec.pi_write_result?.success?.output).toBe("Wrote file successfully.")
     expect(ec.write_result).toBeUndefined()
+  })
+
+  it("encodes all Pi result fields and closes each exec stream", () => {
+    const fields = [
+      "pi_read_result",
+      "pi_bash_result",
+      "pi_edit_result",
+      "pi_grep_result",
+      "pi_find_result",
+      "pi_ls_result",
+    ]
+    for (const [index, resultField] of fields.entries()) {
+      const execId = 45 + index
+      const frames = buildExecClientMessages({ execId, resultField, output: `out-${resultField}` })
+      expect(frames).toHaveLength(2)
+      const ecm = decodeMessage<any>("AgentClientMessage", frames[0]).exec_client_message
+      expect(ecm[resultField]?.success?.output, resultField).toBe(`out-${resultField}`)
+      const close = decodeMessage<any>("AgentClientMessage", frames[1])
+      expect(close.exec_client_control_message?.stream_close?.id, resultField).toBe(execId)
+    }
   })
 
   it("uses shell_stream Start→Stdout→Exit then stream_close for bash", () => {
@@ -737,12 +1075,68 @@ describe("exec safety net (unmapped variants)", () => {
     expect(detectExecVariantField(payload)).toBe(38)
   })
 
-  it("buildRawEmptyExecReply encodes id + empty result at the given field number", () => {
-    const bytes = buildRawEmptyExecReply(5, 11) // mcp_result (#11) is in our schema
-    const dec = decodeMessage<any>("AgentClientMessage", bytes)
-    const ecm = dec.exec_client_message
-    expect(ecm.id).toBe(5)
-    expect(ecm.mcp_result).toBeDefined()
+  it("decodes canonical raw Pi request fields to their offset result fields", () => {
+    const cases = [
+      [45, "pi_read_result"],
+      [46, "pi_bash_result"],
+      [47, "pi_edit_result"],
+      [48, "pi_write_result"],
+      [49, "pi_grep_result"],
+      [50, "pi_find_result"],
+      [51, "pi_ls_result"],
+    ] as const
+
+    for (const [requestField, resultField] of cases) {
+      const payload = asmWithExec(requestField)
+      const decoded = decodeMessage<any>("AgentServerMessage", payload)
+      const parsed = parseExecServerMessage(decoded.exec_server_message)
+      expect(detectExecVariantField(payload), `request field #${requestField}`).toBe(requestField)
+      expect(parsed?.resultField, `request field #${requestField}`).toBe(resultField)
+    }
+  })
+
+  it("decodes field #36 as mcp_state and replies from advertised descriptors", () => {
+    const args: number[] = []
+    const server = new TextEncoder().encode("github")
+    const writeVarint = (n: number) => {
+      let v = n >>> 0
+      while (v > 0x7f) { args.push((v & 0x7f) | 0x80); v >>>= 7 }
+      args.push(v)
+    }
+    writeVarint((1 << 3) | 2)
+    writeVarint(server.length)
+    args.push(...server)
+
+    const payload = asmWithExec(36, Uint8Array.from(args))
+    const decoded = decodeMessage<any>("AgentServerMessage", payload)
+    expect(detectExecVariantField(payload)).toBe(36)
+    expect(decoded.exec_server_message.mcp_state_exec_args.server_identifiers).toEqual(["github"])
+
+    const response = buildMcpStateResult(
+      decoded.exec_server_message.id,
+      decoded.exec_server_message.mcp_state_exec_args,
+      {
+        mcp_file_system_options: {
+          mcp_descriptors: [
+            {
+              server_name: "opencode",
+              server_identifier: "opencode",
+              tools: [{ tool_name: "write", description: "Write" }],
+            },
+            {
+              server_name: "github",
+              server_identifier: "github",
+              tools: [{ tool_name: "get_me", description: "Who am I" }],
+            },
+          ],
+        },
+      },
+    )
+    const result = decodeMessage<any>("AgentClientMessage", response)
+      .exec_client_message.mcp_state_exec_result.success
+    expect(result.servers).toHaveLength(1)
+    expect(result.servers[0].server_identifier).toBe("github")
+    expect(result.servers[0].tools[0].tool_name).toBe("get_me")
   })
 
   it("buildRequestContextResult encodes a prebuilt request_context", () => {

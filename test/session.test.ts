@@ -6,12 +6,15 @@ function fakeSession(): CursorSession {
   return {
     sessionId: `sess_test_${++_seq}`,
     conversationId: `conv_test_${_seq}`,
-    stream: { write() {}, end() {}, frames: () => ({ [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }) }) as any, destroy() {} },
+    stream: { write() {}, end() {}, frames: () => ({ [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }) }) as any, destroy() {}, isClosed: () => false },
     frames: { next: async () => ({ done: true, value: undefined }) } as any,
     pending: new Map(),
+    displayToolCalls: new Map(),
+    nextBridgedExecId: 900_000,
     blobs: new Map(),
     toolDescriptors: [],
     requestContext: {},
+    usageEstimate: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 },
     allowTools: false,
     pumpActive: false,
     heartbeat: null,
@@ -36,7 +39,20 @@ describe("SessionManager", () => {
     expect(mgr.pendingFor(s.sessionId, 3)).toEqual({
       resultField: "mcp_result",
       toolName: "read",
+      bridged: false,
     })
+  })
+
+  it("marks bridged pending entries so continuation skips Cursor exec writes", () => {
+    const mgr = new SessionManager()
+    const s = fakeSession()
+    mgr.registerPending(900_001, s, "bridged", "todowrite", true)
+    expect(mgr.pendingFor(s.sessionId, 900_001)).toEqual({
+      resultField: "bridged",
+      toolName: "todowrite",
+      bridged: true,
+    })
+    expect(mgr.findByExecIds(s.sessionId, [900_001])).toBe(s)
   })
 
   it("resolves an exec id so it is no longer found", () => {
@@ -65,6 +81,15 @@ describe("SessionManager", () => {
     mgr.registerPending(5, s, "read_result")
     s.expiresAt = Date.now() - 1 // registerPending touched it; force-expire
     expect(mgr.findByExecIds(s.sessionId, [5])).toBeUndefined()
+  })
+
+  it("does not return a remotely closed session", () => {
+    const mgr = new SessionManager()
+    const s = fakeSession()
+    mgr.registerPending(5, s, "read_result")
+    s.stream.isClosed = () => true
+    expect(mgr.findByExecIds(s.sessionId, [5])).toBeUndefined()
+    expect(s.pending.size).toBe(0)
   })
 
   it("two sessions with the same execId are not conflated", () => {

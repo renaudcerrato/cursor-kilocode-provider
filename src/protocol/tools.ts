@@ -15,27 +15,75 @@ export type OpencodeToolDef = {
   inputSchema?: unknown
 }
 
+export type ToolServerIdentity = {
+  /** Cursor MCP server id / provider_identifier (e.g. opencode, github). */
+  server: string
+  /** Bare tool name inside that server (Cursor McpArgs.tool_name). */
+  toolName: string
+  /** Full OpenCode tool id used for local execution (e.g. github_create_pull_request). */
+  opencodeName: string
+}
+
+/** Match OpenCode's McpCatalog.sanitize for config server ids. */
+export function sanitizeMcpServerId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "_")
+}
+
+/**
+ * Resolve an OpenCode tool id using known MCP server ids from merged config.
+ * Unknown names remain under the synthetic default server: a flattened tool
+ * name alone cannot distinguish plugin/custom tools from `<server>_<tool>`.
+ */
+export function resolveToolServerIdentity(
+  opencodeName: string,
+  defaultServer = "opencode",
+  knownMcpServers: Iterable<string> = [],
+): ToolServerIdentity {
+  if (!opencodeName) {
+    return { server: defaultServer, toolName: "mcp", opencodeName: "mcp" }
+  }
+
+  // Longest first handles configured ids where one is a prefix of another
+  // (e.g. "git" and "git_hub"). OpenCode flattens with the sanitized id.
+  const servers = [...new Set([...knownMcpServers].map(sanitizeMcpServerId).filter(Boolean))]
+    .sort((a, b) => b.length - a.length)
+  for (const server of servers) {
+    const prefix = `${server}_`
+    if (!opencodeName.startsWith(prefix) || opencodeName.length === prefix.length) continue
+    return {
+      server,
+      toolName: opencodeName.slice(prefix.length),
+      opencodeName,
+    }
+  }
+  return { server: defaultServer, toolName: opencodeName, opencodeName }
+}
+
 /**
  * Convert opencode's per-turn tool list into Cursor `McpToolDefinition`
  * entries for `request_context.tools` (#7) and `AgentRunRequest.mcp_tools`.
  *
- * opencode tools are already namespaced (e.g. `read`, `grep`, or
- * `<server>_<tool>` for MCP). We advertise them all under a synthetic
- * `opencode` provider so Cursor routes their calls back to us as
- * `mcp_args` on the exec channel. The composite `name` is what the model
- * calls and what comes back as `McpArgs.name`.
+ * Builtins and unknown plugin/custom tools are advertised under the synthetic
+ * default server (`opencode`). Tools whose prefixes match configured MCP
+ * servers keep those server ids (`github`, …). Composite `name` is
+ * `<server>-<bareTool>`; local execution still uses the full OpenCode id
+ * reconstructed in `mcpRealToolName`.
  */
 export function toolsToDescriptors(
   tools: OpencodeToolDef[],
   providerIdentifier = "opencode",
+  knownMcpServers: Iterable<string> = [],
 ): Array<Record<string, unknown>> {
-  return tools.map((t) => ({
-    name: `${providerIdentifier}-${t.name}`,
-    description: t.description ?? "",
-    input_schema: encodeJsonAsValue(normalizeInputSchema(t.inputSchema)),
-    provider_identifier: providerIdentifier,
-    tool_name: t.name,
-  }))
+  return tools.map((t) => {
+    const id = resolveToolServerIdentity(t.name, providerIdentifier, knownMcpServers)
+    return {
+      name: `${id.server}-${id.toolName}`,
+      description: t.description ?? "",
+      input_schema: encodeJsonAsValue(normalizeInputSchema(t.inputSchema)),
+      provider_identifier: id.server,
+      tool_name: id.toolName,
+    }
+  })
 }
 
 function normalizeInputSchema(schema: unknown): Record<string, unknown> {
@@ -47,25 +95,40 @@ function normalizeInputSchema(schema: unknown): Record<string, unknown> {
 
 /**
  * Build the nested McpFileSystemOptions / McpMetaToolOptions shape used by
- * requestContext.#23 / #34. Groups every tool under one synthetic server so
- * Cursor's IDE-style decoder also sees the list.
+ * requestContext.#23 / #34. One `McpDescriptor` per resolved server (builtins
+ * and unknown tools under the synthetic default; configured MCP tools under
+ * their upstream server id).
  */
 export function toolsToMcpDescriptors(
   tools: OpencodeToolDef[],
   providerIdentifier = "opencode",
+  knownMcpServers: Iterable<string> = [],
 ): Array<Record<string, unknown>> {
   if (tools.length === 0) return []
-  return [
-    {
-      server_name: providerIdentifier,
-      server_identifier: providerIdentifier,
-      tools: tools.map((t) => ({
-        tool_name: t.name,
-        description: t.description ?? "",
-        input_schema: encodeJsonAsValue(normalizeInputSchema(t.inputSchema)),
-      })),
-    },
-  ]
+
+  const order: string[] = []
+  const byServer = new Map<string, Array<Record<string, unknown>>>()
+
+  for (const t of tools) {
+    const id = resolveToolServerIdentity(t.name, providerIdentifier, knownMcpServers)
+    let list = byServer.get(id.server)
+    if (!list) {
+      list = []
+      byServer.set(id.server, list)
+      order.push(id.server)
+    }
+    list.push({
+      tool_name: id.toolName,
+      description: t.description ?? "",
+      input_schema: encodeJsonAsValue(normalizeInputSchema(t.inputSchema)),
+    })
+  }
+
+  return order.map((server) => ({
+    server_name: server,
+    server_identifier: server,
+    tools: byServer.get(server)!,
+  }))
 }
 
 /**
@@ -75,9 +138,10 @@ export function toolsToMcpDescriptors(
 export function buildLiveRequestContext(
   tools: OpencodeToolDef[],
   providerIdentifier = "opencode",
+  knownMcpServers: Iterable<string> = [],
 ): Record<string, unknown> {
-  const flat = toolsToDescriptors(tools, providerIdentifier)
-  const nested = toolsToMcpDescriptors(tools, providerIdentifier)
+  const flat = toolsToDescriptors(tools, providerIdentifier, knownMcpServers)
+  const nested = toolsToMcpDescriptors(tools, providerIdentifier, knownMcpServers)
   const cwd = process.cwd()
   return {
     env: {
@@ -117,11 +181,18 @@ export function buildLiveRequestContext(
 const cursorToolToOpencode: Record<string, string> = {
   read_args: "read",
   write_args: "write",
+  pi_read_args: "read",
+  pi_bash_args: "bash",
+  pi_edit_args: "edit",
   pi_write_args: "write",
+  pi_grep_args: "grep",
+  pi_find_args: "glob",
+  pi_ls_args: "read",
   grep_args: "grep",
   ls_args: "read",
   delete_args: "bash",
   shell_stream_args: "bash",
+  subagent_args: "task",
   mcp_args: "mcp",
 }
 
@@ -130,6 +201,7 @@ const opencodeToolToCursor: Record<string, string> = {
   write: "write_args",
   grep: "grep_args",
   bash: "shell_stream_args",
+  task: "subagent_args",
   mcp: "mcp_args",
 }
 
@@ -163,6 +235,18 @@ const CURSOR_INTERNAL_KEYS = new Set([
   "ignore",
 ])
 
+/** Required content fields where an empty string is meaningful (for example, truncating a file). */
+const PRESERVE_EMPTY_STRING_KEYS = new Set([
+  "content",
+  "file_text",
+  "fileText",
+  "stream_content",
+  "oldString",
+  "old_string",
+  "newString",
+  "new_string",
+])
+
 export function mapExecServerToToolName(execField: string): string | undefined {
   return cursorToolToOpencode[execField]
 }
@@ -178,16 +262,21 @@ export function mapToolNameToExecField(toolName: string): string | undefined {
 const execVariantToResultField: Record<string, string> = {
   read_args: "read_result",
   write_args: "write_result",
-  // Pi write: args #48, result #49 (not the same field number).
+  pi_read_args: "pi_read_result",
+  pi_bash_args: "pi_bash_result",
+  pi_edit_args: "pi_edit_result",
   pi_write_args: "pi_write_result",
+  pi_grep_args: "pi_grep_result",
+  pi_find_args: "pi_find_result",
+  pi_ls_args: "pi_ls_result",
   grep_args: "grep_result",
   ls_args: "ls_result",
   delete_args: "delete_result",
   shell_stream_args: "shell_stream",
+  subagent_args: "subagent_result",
   mcp_args: "mcp_result",
 }
 
-const MCP_PREFIX = "opencode-"
 
 // ── Extract exec args from ExecServerMessage ──
 
@@ -198,6 +287,8 @@ export type ParsedExecRequest = {
   args: Record<string, unknown>
   /** ExecClientMessage result field to reply with (matches the request variant). */
   resultField: string
+  /** Typed error to return without asking OpenCode to execute invalid args. */
+  localError?: string
 }
 
 export function parseExecServerMessage(
@@ -208,14 +299,45 @@ export function parseExecServerMessage(
 
   // Find which args variant is set
   const execVariant = findOneOfVariant(msg, [
-    "read_args", "write_args", "pi_write_args",
+    "read_args", "write_args",
+    "pi_read_args", "pi_bash_args", "pi_edit_args", "pi_write_args",
+    "pi_grep_args", "pi_find_args", "pi_ls_args",
     "grep_args", "ls_args",
     "delete_args", "shell_stream_args", "mcp_args",
+    "subagent_args",
   ])
   if (!execVariant) return undefined
 
   const resultField = execVariantToResultField[execVariant]
   const execId = (msg.exec_id as string) ?? ""
+
+  if (execVariant === "subagent_args") {
+    const raw = (msg.subagent_args as Record<string, unknown>) ?? {}
+    const prompt = str(raw.prompt)
+    const subagentType = str(raw.subagent_type)
+    const args: Record<string, unknown> = {
+      description: describeSubagentTask(prompt, subagentType),
+      prompt: prompt ?? "",
+      subagent_type: subagentType ?? "",
+    }
+    const resumeAgentId = str(raw.resume_agent_id)
+    if (resumeAgentId) args.task_id = resumeAgentId
+    // protobufjs materializes an absent proto3 optional bool as false in this
+    // reflection schema. OpenCode's foreground default is already false, so
+    // only forward the meaningful opt-in value.
+    if (raw.run_in_background === true) args.background = true
+    return {
+      id,
+      execId,
+      toolName: "task",
+      args,
+      resultField,
+      localError:
+        prompt && subagentType
+          ? undefined
+          : "Cursor subagent request is missing a required prompt or subagent type.",
+    }
+  }
 
   if (execVariant === "mcp_args") {
     // An MCP call to one of the tools we advertised. Resolve the real opencode
@@ -229,6 +351,32 @@ export function parseExecServerMessage(
       toolName: mapped.toolName,
       args: mapped.args,
       resultField,
+    }
+  }
+
+  if (execVariant === "pi_edit_args") {
+    const raw = (msg.pi_edit_args as Record<string, unknown>) ?? {}
+    const edits = Array.isArray(raw.edits) ? raw.edits : []
+    const replacement = edits.length === 1 && edits[0] && typeof edits[0] === "object"
+      ? edits[0] as Record<string, unknown>
+      : undefined
+    const path = str(raw.path)
+    const oldString = replacement ? stringValue(replacement.old_text) : undefined
+    const newString = replacement ? stringValue(replacement.new_text) : undefined
+    const args: Record<string, unknown> = {}
+    if (path) args.filePath = path
+    if (oldString !== undefined) args.oldString = oldString
+    if (newString !== undefined) args.newString = newString
+    return {
+      id,
+      execId,
+      toolName: "edit",
+      args,
+      resultField,
+      localError:
+        path && oldString && newString !== undefined
+          ? undefined
+          : "Cursor Pi edit cannot be represented safely: expected one non-empty replacement.",
     }
   }
 
@@ -263,8 +411,9 @@ export function mapCursorArgsToOpencode(
   for (const [k, v] of Object.entries(raw)) {
     if (v === undefined || v === null) continue
     if (CURSOR_INTERNAL_KEYS.has(k)) continue
-    // Drop empty strings from optional protobuf defaults.
-    if (typeof v === "string" && v.length === 0) continue
+    // Drop empty strings from optional protobuf defaults, but retain required
+    // content fields where empty means a valid destructive edit/write.
+    if (typeof v === "string" && v.length === 0 && !PRESERVE_EMPTY_STRING_KEYS.has(k)) continue
     cleaned[k] = v
   }
 
@@ -300,7 +449,7 @@ export function mapCursorArgsToOpencode(
       const args: Record<string, unknown> = {}
       const filePath = str(cleaned.filePath) ?? str(cleaned.path) ?? str(cleaned.file_path)
       if (filePath) args.filePath = filePath
-      const content = str(cleaned.content) ?? str(cleaned.file_text) ?? str(cleaned.fileText)
+      const content = stringValue(cleaned.content) ?? stringValue(cleaned.file_text) ?? stringValue(cleaned.fileText)
       if (content !== undefined) args.content = content
       return { toolName: "write", args }
     }
@@ -308,9 +457,9 @@ export function mapCursorArgsToOpencode(
       const args: Record<string, unknown> = {}
       const filePath = str(cleaned.filePath) ?? str(cleaned.path) ?? str(cleaned.file_path)
       if (filePath) args.filePath = filePath
-      const oldString = str(cleaned.oldString) ?? str(cleaned.old_string)
+      const oldString = stringValue(cleaned.oldString) ?? stringValue(cleaned.old_string)
       if (oldString !== undefined) args.oldString = oldString
-      const newString = str(cleaned.newString) ?? str(cleaned.new_string)
+      const newString = stringValue(cleaned.newString) ?? stringValue(cleaned.new_string)
       if (newString !== undefined) args.newString = newString
       if (typeof cleaned.replaceAll === "boolean") args.replaceAll = cleaned.replaceAll
       return { toolName: "edit", args }
@@ -360,21 +509,59 @@ function str(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined
 }
 
+function stringValue(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined
+}
+
 function num(v: unknown): number | undefined {
   if (typeof v === "number" && Number.isFinite(v)) return v
   if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v)
   return undefined
 }
 
+function describeSubagentTask(prompt?: string, subagentType?: string): string {
+  const words = prompt?.replace(/\s+/g, " ").trim().split(" ").filter(Boolean).slice(0, 5)
+  if (words?.length) return words.join(" ")
+  return `${subagentType || "Delegated"} task`
+}
+
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`
 }
 
-function mcpRealToolName(mcpArgs: Record<string, unknown>): string {
-  const toolName = mcpArgs.tool_name as string | undefined
-  if (toolName) return toolName
-  const name = (mcpArgs.name as string) ?? ""
-  return name.startsWith(MCP_PREFIX) ? name.slice(MCP_PREFIX.length) : name || "mcp"
+/**
+ * Map Cursor McpArgs back to the OpenCode tool id.
+ * Prefers provider_identifier + bare tool_name (github + create_pull_request
+ * → github_create_pull_request). Builtins under the default server stay bare.
+ */
+export function mcpRealToolName(
+  mcpArgs: Record<string, unknown>,
+  defaultServer = "opencode",
+): string {
+  const toolName = typeof mcpArgs.tool_name === "string" ? mcpArgs.tool_name : undefined
+  const provider =
+    typeof mcpArgs.provider_identifier === "string" ? mcpArgs.provider_identifier : undefined
+
+  if (toolName) {
+    if (provider && provider !== defaultServer) {
+      // Already a full OpenCode id (legacy ads or model echo).
+      if (toolName.startsWith(`${provider}_`)) return toolName
+      return `${provider}_${toolName}`
+    }
+    return toolName
+  }
+
+  const name = typeof mcpArgs.name === "string" ? mcpArgs.name : ""
+  const dash = name.indexOf("-")
+  if (dash > 0) {
+    const server = name.slice(0, dash)
+    const bare = name.slice(dash + 1)
+    if (server && bare) {
+      if (server === defaultServer) return bare
+      return `${server}_${bare}`
+    }
+  }
+  return name || "mcp"
 }
 
 function decodeMcpArgs(raw: unknown): Record<string, unknown> {
@@ -599,6 +786,16 @@ export function buildTypedExecResult(
       // PiWriteExecSuccess is just { output }; error is { error }.
       if (error) return { error: { error } }
       return { success: { output: output || "Wrote file successfully." } }
+    case "pi_read_result":
+      if (error) return { error: { error } }
+      return { success: { output: unwrapReadOutput(output) } }
+    case "pi_bash_result":
+    case "pi_edit_result":
+    case "pi_grep_result":
+    case "pi_find_result":
+    case "pi_ls_result":
+      if (error) return { error: { error } }
+      return { success: { output } }
     case "delete_result":
       if (error) return { error: { path: "", error } }
       return { success: { path: "", deleted_file: "" } }
@@ -633,10 +830,57 @@ export function buildTypedExecResult(
           is_error: false,
         },
       }
+    case "subagent_result": {
+      const task = parseOpenCodeTaskOutput(output)
+      if (error || task.state === "error") {
+        return {
+          error: {
+            ...(task.agentId ? { agent_id: task.agentId } : {}),
+            error: error ?? task.message ?? output,
+          },
+        }
+      }
+      return {
+        success: {
+          agent_id: task.agentId ?? "",
+          ...(task.message !== undefined ? { final_message: task.message } : {}),
+          tool_call_count: 0,
+          // OpenCode marks an asynchronous launch as state="running". Cursor's
+          // canonical USER_REQUEST enum value is 2; foreground/default is 0.
+          background_reason: task.state === "running" ? 2 : 0,
+        },
+      }
+    }
     default:
       // Unknown variant: best-effort success wrapper so the server sees a oneof.
       if (error) return { error: { error } }
       return { success: { content: output } }
+  }
+}
+
+function parseOpenCodeTaskOutput(output: string): {
+  agentId?: string
+  state?: "running" | "completed" | "error"
+  message?: string
+} {
+  // Attribute order is not guaranteed; accept id/state in either order and
+  // ignore additional attributes OpenCode may emit on the <task> open tag.
+  const open = /<task\b([^>]*)>/i.exec(output)
+  if (!open) return { message: output }
+  const attrs = open[1]
+  const agentId = /\bid="([^"]+)"/i.exec(attrs)?.[1]
+  const state = /\bstate="(running|completed|error)"/i.exec(attrs)?.[1] as
+    | "running"
+    | "completed"
+    | "error"
+    | undefined
+  if (!agentId || !state) return { message: output }
+  const tag = state === "error" ? "task_error" : "task_result"
+  const body = new RegExp(`<${tag}>\\n?([\\s\\S]*?)\\n?</${tag}>`, "i").exec(output)
+  return {
+    agentId,
+    state,
+    message: body?.[1] ?? output,
   }
 }
 
@@ -710,15 +954,11 @@ export function parseExecIdFromToolCallId(
   return { sessionId: match[1], execId }
 }
 
-// ── Safety net: reply to exec variants we don't map to an opencode tool ──
+// ── Unknown exec diagnostics ──
 //
-// Cursor's real server sends server-initiated exec probes (request_context #10,
-// and potentially diagnostics/smart-mode-classifier/etc.) that are NOT tool
-// calls. opencode owns the tool loop, so these have no opencode tool to route
-// to — but we MUST still reply on the Run stream or the server blocks forever
-// (endless heartbeats, no response). For any unmapped variant we emit an empty
-// result at the SAME field number (request/result field numbers are identical
-// for every exec variant: read #7→#7, mcp #11→#11, request_context #10→#10…).
+// Request/result field numbers are not universally identical (the Pi range is
+// offset by one), so unknown variants must never receive a guessed empty reply.
+// The pump uses this raw detector to report schema drift and fail the Run.
 
 /**
  * Find the exec variant field number from the raw (gunzipped) AgentServerMessage
@@ -735,30 +975,6 @@ export function detectExecVariantField(agentServerPayload: Uint8Array): number |
     return f.fn
   }
   return undefined
-}
-
-/** Build ExecClientMessage{1:id, <resultField>: empty} as raw bytes. */
-export function buildRawEmptyExecReply(execId: number, resultField: number): Uint8Array {
-  const inner: number[] = []
-  writeVarintRaw(inner, (1 << 3) | 0) // field 1 (id), wire 0 (varint)
-  writeVarintRaw(inner, execId >>> 0)
-  writeVarintRaw(inner, (resultField << 3) | 2) // field N, wire 2 (length-delimited)
-  writeVarintRaw(inner, 0) // empty submessage
-  // Wrap as AgentClientMessage.exec_client_message (field #2).
-  const acm: number[] = []
-  writeVarintRaw(acm, (2 << 3) | 2)
-  writeVarintRaw(acm, inner.length)
-  for (const b of inner) acm.push(b)
-  return new Uint8Array(acm)
-}
-
-function writeVarintRaw(out: number[], n: number): void {
-  let v = n >>> 0
-  while (v > 0x7f) {
-    out.push((v & 0x7f) | 0x80)
-    v >>>= 7
-  }
-  out.push(v)
 }
 
 /**
@@ -778,4 +994,73 @@ export function buildRequestContextResult(
       },
     },
   })
+}
+
+/**
+ * Answer Cursor's exec #36 MCP-state probe from the same descriptors advertised
+ * in RequestContext. OpenCode remains the executor; this only confirms that the
+ * provider's virtual MCP servers and their tools are available.
+ */
+export function buildMcpStateResult(
+  execId: number,
+  args: Record<string, unknown>,
+  requestContext: Record<string, unknown>,
+): Uint8Array {
+  const requested = new Set(
+    Array.isArray(args.server_identifiers)
+      ? args.server_identifiers.filter((id): id is string => typeof id === "string" && id.length > 0)
+      : [],
+  )
+  const fsOptions = recordValue(requestContext.mcp_file_system_options)
+  const nested = Array.isArray(fsOptions?.mcp_descriptors)
+    ? fsOptions.mcp_descriptors.map(recordValue).filter((d): d is Record<string, unknown> => !!d)
+    : []
+  const descriptors = nested.length > 0 ? nested : descriptorsFromFlatTools(requestContext.tools)
+  const servers = descriptors
+    .filter((descriptor) => {
+      const id = stringValue(descriptor.server_identifier)
+      return requested.size === 0 || (id !== undefined && requested.has(id))
+    })
+    .map((descriptor) => ({
+      server_name:
+        stringValue(descriptor.server_name) ?? stringValue(descriptor.server_identifier) ?? "",
+      server_identifier:
+        stringValue(descriptor.server_identifier) ?? stringValue(descriptor.server_name) ?? "",
+      tools: Array.isArray(descriptor.tools) ? descriptor.tools : [],
+    }))
+
+  return encodeMessage("AgentClientMessage", {
+    exec_client_message: {
+      id: execId,
+      mcp_state_exec_result: { success: { servers } },
+    },
+  })
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function descriptorsFromFlatTools(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return []
+  const byServer = new Map<string, Array<Record<string, unknown>>>()
+  for (const raw of value) {
+    const tool = recordValue(raw)
+    if (!tool) continue
+    const server = stringValue(tool.provider_identifier) ?? "opencode"
+    const tools = byServer.get(server) ?? []
+    tools.push({
+      tool_name: stringValue(tool.tool_name) ?? stringValue(tool.name) ?? "",
+      description: stringValue(tool.description) ?? "",
+      input_schema: tool.input_schema,
+    })
+    byServer.set(server, tools)
+  }
+  return [...byServer].map(([server, tools]) => ({
+    server_name: server,
+    server_identifier: server,
+    tools,
+  }))
 }

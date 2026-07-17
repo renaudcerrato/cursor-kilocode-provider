@@ -32,9 +32,19 @@ Use `git diff` (content), not just `git log` (commits). Upstream may merge a PR 
 
 ### 4. Cherry-pick and adapt
 
+For small batches (1-3 commits), cherry-pick:
+
 ```sh
 git checkout -b integrate/upstream-<topic>
 git cherry-pick <sha>
+```
+
+For large batches (many commits, thousands of lines), merge and resolve conflicts in one pass:
+
+```sh
+git checkout -b integrate/upstream-<topic>
+git merge upstream/main --no-commit --no-ff
+# resolve conflicts using the adaptation table, then commit
 ```
 
 Resolve conflicts using the adaptation table below, then verify.
@@ -45,7 +55,7 @@ Resolve conflicts using the adaptation table below, then verify.
 bun run typecheck && bun run build && bun test
 ```
 
-The test suite (247 tests) asserts the Kilo Code paths and auth behavior. A missed adaptation will fail loudly rather than ship the wrong paths.
+The test suite (415 tests) asserts the Kilo Code paths and auth behavior. A missed adaptation will fail loudly rather than ship the wrong paths.
 
 ## Adaptation layer
 
@@ -61,7 +71,7 @@ The entire fork maintenance burden is this table. Apply it when resolving confli
 
 All three honor `$XDG_CONFIG_HOME` / `$XDG_CACHE_HOME` / `$XDG_DATA_HOME` respectively and fall back to `HOME`/`USERPROFILE`/`homedir()`.
 
-Upstream uses `opencodeGlobalConfigDir()` / `opencodeGlobalCacheDir()` / `opencodeGlobalDataDir()` from `src/context/paths.ts`. This fork keeps the path helpers in `src/config.ts` alongside `kiloConfigDir()`.
+Upstream uses `opencodeGlobalConfigDir()` / `opencodeGlobalCacheDir()` / `opencodeGlobalDataDir()` from `src/context/paths.ts`. This fork keeps the path helpers in `src/config.ts` alongside `kiloConfigDir()`. When porting a file that imports `opencodeGlobal*` from `context/paths.ts`, redirect the import to the equivalent `kilo*` helper from `src/config.ts` (the `context/paths.ts` file in this fork only retains `resolveHomeRelative`).
 
 ### Env vars
 
@@ -126,6 +136,19 @@ If upstream changes `plugin-v2.ts`, the change is irrelevant to this fork — sk
 `src/context/auth-store.ts` reads `auth.json` from `kiloGlobalDataDir()` (default `~/.local/share/kilo`). Upstream's equivalent reads from the OpenCode data dir. The `StoredAuth` type and `asStoredAuth` validation are otherwise identical.
 
 The loader (`src/plugin.ts`) prefers Kilo Code's live `getAuth()`, falls back to the durable store, and keeps an in-memory `sessionAccessToken` so a refresh that succeeded in-process but failed to persist is still usable. Preserve this ordering when porting loader changes.
+
+### Model display names (`src/plugin.ts` `safeLabel`)
+
+This fork strips HTML markup from model display names with `html-to-text` (a dependency upstream does not have), then applies a char-class safety strip. Upstream's `safeLabel` uses a pure regex tag strip. Consequently:
+
+- The fork's variant keys are `safeLabel(variant.displayName)` (the IDE's per-variant label), not prefixed with the model base name. Upstream's tests expect `"<base> <suffix>"`; the fork expects `"<variant label>"`.
+- `html-to-text` decodes HTML entities (`&amp;` → `&`) that a regex strip leaves untouched.
+
+When porting `test/plugin.test.ts`, adapt `modelInfoToConfig` expectations to the fork's variant-key behavior. Do not remove the `html-to-text` dependency or its call.
+
+### AGENTS.md
+
+Upstream added an OpenCode-flavored `AGENTS.md` at the repo root (commits `d70ef7a` + `9669085`). This fork maintains its **own** Kilo-adapted `AGENTS.md` (package name, `@kilocode/plugin`, XDG paths `~/.cache/kilo` / `~/.local/share/kilo` / `~/.config/kilo`, `KILO_AUTH_CONTENT`, `.kilocode` / `.kilo` discovery, `kilo.json` / `config.json` config files, dropped plugin-v2 row, "Intentionally NOT adapted" section). On future integrations, **do not take upstream's AGENTS.md** — keep the fork's and cherry-pick only factual changes (new modules, new constraints) into it.
 
 ## Intentionally NOT adapted
 

@@ -14,6 +14,7 @@ export type OpencodeJson = {
   permission?: unknown
   plugin?: string[]
   plugins?: string[]
+  mcp?: Record<string, unknown>
 }
 
 async function exists(file: string): Promise<boolean> {
@@ -141,6 +142,7 @@ export async function loadMergedConfig(workspaceRoot: string): Promise<OpencodeJ
     instructions: [...(globalConfig.instructions ?? []), ...(projectConfig.instructions ?? [])],
     plugin: [...new Set([...(globalConfig.plugin ?? []), ...(projectConfig.plugin ?? [])])],
     plugins: [...new Set([...(globalConfig.plugins ?? []), ...(projectConfig.plugins ?? [])])],
+    mcp: { ...(globalConfig.mcp ?? {}), ...(projectConfig.mcp ?? {}) },
     permission: projectConfig.permission ?? globalConfig.permission,
   }
 }

@@ -3,12 +3,16 @@ import { mkdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { CursorPlugin, modelInfoToConfig, thinkingSuffixBaseNames } from "../src/plugin.js"
-import { readCache, writeCache, type ModelInfo } from "../src/models.js"
+import { CURSOR_VARIANT_PARAMETERS_KEY, readCache, writeCache, type ModelInfo } from "../src/models.js"
 import { resetClientVersionCache } from "../src/protocol/client-version.js"
 import { resetAgentUrlCache } from "../src/agent-url.js"
+import { CURSOR_COMPACTION_OPTION } from "../src/shared.js"
 
 // Characters safeLabel must remove from emitted names/keys (issue #2).
 const INVALID = new RegExp("[()<>&\"'`]")
+const variantParams = (params: Array<{ id: string; value: string }>) => ({
+  [CURSOR_VARIANT_PARAMETERS_KEY]: params,
+})
 
 const originalHome = process.env.HOME
 const originalXdgCache = process.env.XDG_CACHE_HOME
@@ -83,17 +87,11 @@ describe("CursorPlugin config hook", () => {
 })
 
 describe("modelInfoToConfig", () => {
-  it("strips HTML tags and markup-breaking chars from name + variant keys, keeps inner text readable", () => {
-    // Cursor's AvailableModels API returns variant displayNames with embedded
-    // <span> markup for styling the reasoning-tier suffix in its own webview:
-    //   "Opus 4.8 <span style=\"color: var(--cursor-text-tertiary);\">Low</span>"
-    // Kilo Code renders names as plain text, so the <span> wrapper must be
-    // removed while preserving the inner "Low" label (the whole point of the
-    // suffix). A naive char-class strip left tag residue like
-    // "span style=color: var--cursor-text-tertiary;;Low/span".
+  it("strips markup-breaking chars and parens from name + variant keys, keeps names readable", () => {
+    // The HTML-tag strip keeps inner text, so <span>…</span>Opus becomes Opus.
     const mi: ModelInfo = {
       id: "claude-opus-4-8",
-      displayName: "Opus 4.8",
+      displayName: 'Claude <span style="color: var(--cursor-text-tertiary);">Opus</span> 4.8',
       supportsThinking: false,
       supportsAgent: true,
       maxContext: 300000,
@@ -118,8 +116,9 @@ describe("modelInfoToConfig", () => {
 
     const config = modelInfoToConfig(mi)
 
-    // Model name: clean base name, no markup chars.
-    expect(config.name).toBe("Opus 4.8")
+    // Model name: HTML tags stripped, parens and markup chars gone, the
+    // plain-text tokens adjacent to the markup are preserved.
+    expect(config.name).toBe("Claude Opus 4.8")
     expect(config.name).not.toMatch(INVALID)
     expect(config.name).not.toContain("span")
     expect(config.name).not.toContain("style")
@@ -128,26 +127,13 @@ describe("modelInfoToConfig", () => {
     // no markup chars, unique, params intact.
     const keys = Object.keys(config.variants)
     expect(keys).toEqual(["Opus 4.8 Low", "Opus 4.8 Max"])
-    for (const k of keys) {
-      expect(k).not.toMatch(INVALID)
-      expect(k).not.toContain("span")
-      expect(k).not.toContain("style")
-    }
-    expect(config.variants["Opus 4.8 Low"]).toEqual({ effort: "low" })
-    expect(config.variants["Opus 4.8 Max"]).toEqual({ effort: "max" })
-  })
-
-  it("strips a standalone HTML tag (tag name removed, surrounding text kept)", () => {
-    const mi: ModelInfo = {
-      id: "m",
-      displayName: 'Claude <opus> "4.8"',
-      variants: [],
-    }
-    const config = modelInfoToConfig(mi)
-    // <opus> parses as an HTML tag — its name is removed, surrounding text kept;
-    // the quotes are then stripped by the safety-net char-class strip.
-    expect(config.name).toBe("Claude 4.8")
-    expect(config.name).not.toMatch(INVALID)
+    for (const k of keys) expect(k).not.toMatch(INVALID)
+    expect(config.variants["Opus 4.8 Low"]).toEqual(
+      variantParams([{ id: "effort", value: "low" }]),
+    )
+    expect(config.variants["Opus 4.8 Max"]).toEqual(
+      variantParams([{ id: "effort", value: "max" }]),
+    )
   })
 
   it("leaves already-clean names unchanged and omits variants when none exist", () => {
@@ -157,20 +143,49 @@ describe("modelInfoToConfig", () => {
     expect(config.variants).toBeUndefined()
   })
 
-  it("decodes HTML entities in display names (regression vs regex strip)", () => {
-    // A pure regex tag strip left entities like &amp; untouched; html-to-text
-    // decodes them so the name reads correctly.
+  it("disambiguates variants that share a display name by tagging distinguishing params", () => {
+    // Mirrors Cursor's Composer 2.5: both variants render the same base
+    // display name (the "Fast" suffix is in a <span> that safeLabel drops);
+    // without disambiguation the colliding variant would silently overwrite
+    // the first under the same key. The first variant's key also gets
+    // suffixed so it never equals the model name itself.
     const mi: ModelInfo = {
-      id: "m",
-      displayName: "Sonnet 5 &amp; friends",
-      variants: [],
+      id: "composer-2.5",
+      displayName: "Composer 2.5",
+      variants: [
+        {
+          key: "composer-2.5",
+          displayName: "Composer 2.5",
+          isDefaultNonMax: true,
+          isDefaultMax: false,
+          parameterValues: [{ id: "fast", value: "false" }],
+        },
+        {
+          key: "composer-2.5",
+          displayName: "Composer 2.5",
+          isDefaultNonMax: false,
+          isDefaultMax: true,
+          parameterValues: [{ id: "fast", value: "true" }],
+        },
+      ],
     }
+
     const config = modelInfoToConfig(mi)
-    expect(config.name).toBe("Sonnet 5 friends")
-    expect(config.name).not.toMatch(INVALID)
+    const keys = Object.keys(config.variants)
+    expect(keys).toHaveLength(2)
+    expect(keys).toEqual(["Composer 2.5 default", "Composer 2.5 Fast"])
+    expect(config.variants["Composer 2.5 default"]).toEqual(
+      variantParams([{ id: "fast", value: "false" }]),
+    )
+    expect(config.variants["Composer 2.5 Fast"]).toEqual(
+      variantParams([{ id: "fast", value: "true" }]),
+    )
   })
 
   it("disambiguates variant keys that collide after sanitization", () => {
+    // Two variants share a sanitized display name and differ only by the
+    // `fast` param; the second should be tagged Fast so the picker keeps
+    // both visible.
     const mi: ModelInfo = {
       id: "m",
       variants: [
@@ -179,21 +194,43 @@ describe("modelInfoToConfig", () => {
           displayName: "Same (x)",
           isDefaultNonMax: true,
           isDefaultMax: false,
-          parameterValues: [{ id: "effort", value: "low" }],
+          parameterValues: [{ id: "fast", value: "false" }],
         },
         {
           key: "m",
           displayName: "Same (x)",
           isDefaultNonMax: false,
           isDefaultMax: true,
-          parameterValues: [{ id: "effort", value: "high" }],
+          parameterValues: [{ id: "fast", value: "true" }],
         },
       ],
     }
     const config = modelInfoToConfig(mi)
-    expect(Object.keys(config.variants)).toEqual(["Same x", "Same x--2"])
-    expect(config.variants["Same x"]).toEqual({ effort: "low" })
-    expect(config.variants["Same x--2"]).toEqual({ effort: "high" })
+    expect(Object.keys(config.variants)).toEqual(["Same x", "Same x Fast"])
+    expect(config.variants["Same x"]).toEqual(
+      variantParams([{ id: "fast", value: "false" }]),
+    )
+    expect(config.variants["Same x Fast"]).toEqual(
+      variantParams([{ id: "fast", value: "true" }]),
+    )
+  })
+
+  it("falls back to default when the colliding variant has no distinguishing param", () => {
+    const mi: ModelInfo = {
+      id: "m",
+      displayName: "M",
+      variants: [
+        { key: "m", displayName: "M", isDefaultNonMax: true, isDefaultMax: false,
+          parameterValues: [{ id: "effort", value: "low" }] },
+        { key: "m", displayName: "M", isDefaultNonMax: false, isDefaultMax: true,
+          parameterValues: [{ id: "effort", value: "high" }] },
+      ],
+    }
+    const config = modelInfoToConfig(mi)
+    // First variant collides with the model name itself, gets suffixed.
+    // Second variant collides with the first, also gets default since
+    // "effort" is not in the distinguishing set.
+    expect(Object.keys(config.variants)).toEqual(["M default", "M default 2"])
   })
 
   it("tags only the thinking model of an ambiguous pair (Cursor's Claude convention)", () => {
@@ -229,6 +266,79 @@ describe("modelInfoToConfig", () => {
   })
 })
 
+describe("CursorPlugin compaction marker", () => {
+  it("marks only the OpenCode compaction agent in provider options", async () => {
+    const plugin = await CursorPlugin({ directory: process.cwd() } as never)
+    const compaction = { options: {} as Record<string, unknown> }
+    await plugin["chat.params"]?.({
+      sessionID: "ses_1",
+      agent: "compaction",
+      model: { providerID: "cursor" },
+    } as never, compaction as never)
+    expect(compaction.options[CURSOR_COMPACTION_OPTION]).toBe(true)
+
+    const normal = { options: {} as Record<string, unknown> }
+    await plugin["chat.params"]?.({
+      sessionID: "ses_1",
+      agent: "build",
+      model: { providerID: "cursor" },
+    } as never, normal as never)
+    expect(normal.options[CURSOR_COMPACTION_OPTION]).toBeUndefined()
+  })
+})
+
+describe("CursorPlugin config hook", () => {
+  it("loads cached models from ~/.cache/kilo, not input.directory", async () => {
+    const fakeHome = path.join(os.tmpdir(), `cursor-plugin-test-${process.pid}-${Date.now()}`)
+    process.env.HOME = fakeHome
+    delete process.env.XDG_CACHE_HOME
+    delete process.env.KILO_AUTH_CONTENT
+    const projectDir = path.join(fakeHome, "project")
+    const cacheDir = path.join(fakeHome, ".cache", "kilo")
+    await mkdir(cacheDir, { recursive: true })
+    await mkdir(projectDir, { recursive: true })
+    await writeCache(cacheDir, {
+      fetchedAt: Date.now(),
+      models: [{ id: "cursor-test-model", variants: [] }],
+    })
+
+    try {
+      const plugin = await CursorPlugin({ directory: projectDir } as never)
+      const config: { provider?: Record<string, { models?: Record<string, unknown> }> } = {}
+      await plugin.config?.(config as never)
+
+      expect(config.provider?.cursor?.models).toHaveProperty("cursor-test-model")
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true })
+    }
+  })
+
+  it("loads cached models from $XDG_CACHE_HOME/kilo when set", async () => {
+    const fakeHome = path.join(os.tmpdir(), `cursor-plugin-test-${process.pid}-${Date.now()}`)
+    const xdgCache = path.join(fakeHome, "xdg-cache")
+    process.env.HOME = fakeHome
+    process.env.XDG_CACHE_HOME = xdgCache
+    delete process.env.KILO_AUTH_CONTENT
+    const projectDir = path.join(fakeHome, "project")
+    const cacheDir = path.join(xdgCache, "kilo")
+    await mkdir(cacheDir, { recursive: true })
+    await mkdir(projectDir, { recursive: true })
+    await writeCache(cacheDir, {
+      fetchedAt: Date.now(),
+      models: [{ id: "cursor-xdg-model", variants: [] }],
+    })
+
+    try {
+      const plugin = await CursorPlugin({ directory: projectDir } as never)
+      const config: { provider?: Record<string, { models?: Record<string, unknown> }> } = {}
+      await plugin.config?.(config as never)
+
+      expect(config.provider?.cursor?.models).toHaveProperty("cursor-xdg-model")
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true })
+    }
+  })
+})
 function fakeJwt(expOffsetSec: number): string {
   const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64")
   const payload = Buffer.from(
@@ -344,6 +454,31 @@ describe("loadModels on cache miss", () => {
     expect(availableModelsCalls).toBe(1)
     expect(refreshCalls).toBe(0)
     expect((await readCache(cacheDir))?.models[0]?.id).toBe("fetched-model")
+  })
+
+  it("refreshes an old-schema nonempty cache before config materializes models", async () => {
+    await writeCache(cacheDir, {
+      fetchedAt: Date.now(),
+      models: [{ id: "stale-model", displayName: "Stale", variants: [] }],
+    })
+    await writeAuth({
+      type: "oauth",
+      access: fakeJwt(3600),
+      refresh: "refresh-tok",
+      expires: Date.now() + 3_600_000,
+    })
+
+    const plugin = await CursorPlugin(pluginInput())
+    const config: { provider?: Record<string, { models?: Record<string, unknown> }> } = {}
+    await plugin.config?.(config as never)
+
+    expect(config.provider?.cursor?.models).toHaveProperty("fetched-model")
+    expect(config.provider?.cursor?.models).not.toHaveProperty("stale-model")
+    expect(availableModelsCalls).toBe(1)
+    expect(await readCache(cacheDir)).toMatchObject({
+      schemaVersion: 2,
+      models: [{ id: "fetched-model" }],
+    })
   })
 
   it("refreshes expired oauth, preserves extras, then fetches models", async () => {

@@ -1,15 +1,16 @@
 import type { Hooks, PluginInput, AuthOAuthResult, Config } from "@kilocode/plugin"
 import type { Auth } from "@kilocode/sdk/v2"
 import { convert as convertHtmlToText } from "html-to-text"
-import { CURSOR_PROVIDER_ID, CURSOR_WEBSITE_HOST, CURSOR_API_HOST } from "./shared.js"
+import { CURSOR_COMPACTION_OPTION, CURSOR_PROVIDER_ID, CURSOR_WEBSITE_HOST, CURSOR_API_HOST } from "./shared.js"
 import { pollForTokens, exchangeApiKey, refreshAccessToken, isExpiringSoon, generatePkceParams, generatePkceChallenge, buildLoginUrl, decodeJwtPayload } from "./auth.js"
-import { readCache, discoverModels, isCacheFresh, type ModelInfo } from "./models.js"
+import { CURSOR_VARIANT_PARAMETERS_KEY, CURSOR_WIRE_MODEL_ID_KEY, readCache, discoverModels, isCacheFresh, type ModelInfo, type ModelVariant } from "./models.js"
 import { kiloGlobalCacheDir } from "./config.js"
 import { readStoredAuth, type StoredAuth } from "./context/auth-store.js"
 import { resolveAgentUrl } from "./agent-url.js"
 
 const MODULE_URL = new URL("./index.js", import.meta.url).href
 
+/**
 /**
  * Render a model or variant display name as plain text for the Kilo Code config.
  *
@@ -40,24 +41,68 @@ function baseName(mi: ModelInfo): string {
   return safeLabel(mi.displayName ?? mi.id)
 }
 
-function modelInfoVariants(mi: ModelInfo): Record<string, Record<string, unknown>> | undefined {
-  if (mi.variants.length === 0) return undefined
+function modelInfoVariants(
+  mi: ModelInfo,
+  variants: ModelVariant[],
+): Record<string, Record<string, unknown>> | undefined {
+  if (variants.length === 0) return undefined
   const entries: Record<string, Record<string, unknown>> = {}
   const usedKeys = new Set<string>()
-  for (const v of mi.variants) {
-    const base = safeLabel(v.displayName || v.key || "default")
-    let key = base
-    let suffix = 2
-    while (usedKeys.has(key)) key = `${base}--${suffix++}`
+  const baseName = safeLabel(mi.displayName ?? mi.id)
+
+  // Each variant's key is `safeLabel(displayName)` (the IDE's own label, e.g.
+  // "Opus 4.8 1M High Fast Thinking") so the picker matches what the user
+  // sees in Cursor. Two variants can sanitize to the same name when the IDE
+  // wraps a differentiator in `<span>…</span>` (e.g. Composer's "Fast"
+  // suffix collapses to the bare model name after stripping). To guarantee
+  // every variant stays pickable:
+  //   1. If the sanitized displayName matches the model name itself, suffix
+  //      it with distinguishing params (or "default") so it never collides
+  //      with the model entry in the variant panel.
+  //   2. If two variants still collide, tag the later one with its params.
+  // Suffixes must stay free of `()` / markup chars — same constraint as
+  // safeLabel (issue #2); use spaced tokens, not parenthetical tags.
+  const tagDims = (p: { id: string; value: string }[]): string => {
+    const labels: string[] = []
+    for (const d of p) {
+      if (d.id === "fast" && d.value === "true") labels.push("Fast")
+      else if (d.id === "thinking" && d.value === "true") labels.push("Thinking")
+      else if (d.id === "context") labels.push(d.value)
+    }
+    if (labels.length > 0) return ` ${labels.join(" ")}`
+    // No params at all — still disambiguate from the model name itself.
+    if (p.length === 0) return ""
+    return " default"
+  }
+
+  for (const v of variants) {
+    const sanitized = safeLabel(v.displayName || v.key || "default")
+    let key = sanitized
+    // Never let a variant key equal the model name — that would make the
+    // variant entry indistinguishable from the model entry in pickers that
+    // collapse them.
+    if (key === baseName && !usedKeys.has(key)) {
+      key = `${baseName}${tagDims(v.parameterValues)}` || `${baseName} default`
+    } else if (usedKeys.has(key)) {
+      key = `${sanitized}${tagDims(v.parameterValues)}`
+    }
+    let n = 2
+    while (usedKeys.has(key)) key = `${sanitized}${tagDims(v.parameterValues)} ${n++}`
     usedKeys.add(key)
 
-    const params: Record<string, unknown> = {}
-    for (const p of v.parameterValues) {
-      params[p.id] = p.value
+    entries[key] = {
+      [CURSOR_VARIANT_PARAMETERS_KEY]: v.parameterValues.map((p) => ({ ...p })),
     }
-    entries[key] = params
   }
   return entries
+}
+
+function isLongContextVariant(v: ModelVariant): boolean {
+  return v.parameterValues.some((p) => p.id === "context" && p.value === "1m")
+}
+
+function variantsForTier(mi: ModelInfo, tier: "base" | "long"): ModelVariant[] {
+  return mi.variants.filter((v) => isLongContextVariant(v) === (tier === "long"))
 }
 
 /**
@@ -84,32 +129,72 @@ export function thinkingSuffixBaseNames(models: ModelInfo[]): Set<string> {
 
 export function modelInfoToConfig(
   mi: ModelInfo,
-  options: { thinkingSuffix?: boolean } = {},
+  options: { thinkingSuffix?: boolean; contextTier?: "base" | "long" } = {},
 ) {
+  const contextTier = options.contextTier ?? "base"
+  const variants = variantsForTier(mi, contextTier)
   let name = baseName(mi)
   if (options.thinkingSuffix) name += " Thinking"
+  if (contextTier === "long") name += " 1M"
+  // OpenCode's context limit is static per model entry, while Cursor's context
+  // tier is a variant parameter. Long-context choices are therefore emitted as
+  // separate OpenCode entries by modelsToConfig.
+  const context = contextTier === "long"
+    ? (mi.maxContextForMaxMode ?? 1_000_000)
+    : (mi.maxContext ?? 200_000)
+  // OpenCode's overflow/compaction/UI use limit.context; generation and
+  // thinking budgets use limit.output. models.dev 1M peers advertise
+  // 64k–128k output — a tiny cap makes long-context sessions feel broken
+  // even when the 1M input window is correct.
+  const output = contextTier === "long" ? 128_000 : 32_000
   const config: Record<string, any> = {
     name,
     reasoning: mi.supportsThinking ?? false,
     tool_call: mi.supportsAgent ?? true,
     temperature: false,
     limit: {
-      context: mi.maxContext ?? 200000,
-      output: 4096,
+      context,
+      output,
     },
   }
-  const variants = modelInfoVariants(mi)
-  if (variants) config.variants = variants
+  const variantConfig = modelInfoVariants(mi, variants)
+  if (variantConfig) config.variants = variantConfig
+  if (contextTier === "long") {
+    const defaultVariant = variants.find((v) => v.isDefaultMax) ?? variants[0]
+    if (defaultVariant) {
+      config.options = {
+        [CURSOR_WIRE_MODEL_ID_KEY]: mi.id,
+        [CURSOR_VARIANT_PARAMETERS_KEY]: defaultVariant.parameterValues.map((p) => ({ ...p })),
+      }
+    }
+  }
   return config
 }
 
-function modelsToConfig(models: ModelInfo[]): Record<string, any> {
+export function modelsToConfig(models: ModelInfo[]): Record<string, any> {
   const ambiguous = thinkingSuffixBaseNames(models)
   const out: Record<string, any> = {}
+  const usedIds = new Set(models.map((m) => m.id))
   for (const m of models) {
-    out[m.id] = modelInfoToConfig(m, {
-      thinkingSuffix: !!m.supportsThinking && ambiguous.has(baseName(m)),
-    })
+    const thinkingSuffix = !!m.supportsThinking && ambiguous.has(baseName(m))
+    const baseVariants = variantsForTier(m, "base")
+    const longVariants = variantsForTier(m, "long")
+
+    if (baseVariants.length > 0 || longVariants.length === 0) {
+      out[m.id] = modelInfoToConfig(m, { thinkingSuffix, contextTier: "base" })
+    }
+    if (longVariants.length === 0) continue
+
+    if (baseVariants.length === 0) {
+      out[m.id] = modelInfoToConfig(m, { thinkingSuffix, contextTier: "long" })
+      continue
+    }
+
+    let longId = `${m.id}-1m`
+    let suffix = 2
+    while (usedIds.has(longId)) longId = `${m.id}-1m-${suffix++}`
+    usedIds.add(longId)
+    out[longId] = modelInfoToConfig(m, { thinkingSuffix, contextTier: "long" })
   }
   return out
 }
@@ -154,13 +239,21 @@ export async function CursorPlugin(input: PluginInput): Promise<Hooks> {
   }
 
   /**
+   * Durable credentials Kilo Code stores on disk (same file getAuth() reads in
+   * the normal path). Used from `config`, which has no getAuth() callback.
+   */
+  async function authFromStore(): Promise<Auth | StoredAuth | undefined> {
+    return readStoredAuth(CURSOR_PROVIDER_ID)
+  }
+
+  /**
    * Prefer Kilo Code's live getAuth(); fall back to the durable store so loader
    * and config share the same underlying credentials when possible.
    */
   async function authForLoader(
     getAuth: () => Promise<Auth | undefined>,
   ): Promise<Auth | StoredAuth | undefined> {
-    return (await getAuth()) ?? readStoredAuth(CURSOR_PROVIDER_ID)
+    return (await getAuth()) ?? (await authFromStore())
   }
 
   async function resolveAccessToken(auth: Auth | StoredAuth): Promise<string | undefined> {
@@ -220,27 +313,41 @@ export async function CursorPlugin(input: PluginInput): Promise<Hooks> {
 
   async function loadModels(): Promise<Record<string, any>> {
     const cached = await readCache(cacheDir)
-    if (!cached || cached.models.length === 0) {
-      // Config runs before auth.loader and has no getAuth(); read the durable
-      // store (normally the same source getAuth() uses).
-      const auth = await readStoredAuth(CURSOR_PROVIDER_ID)
-      if (auth) {
-        const accessToken = await resolveAccessToken(auth)
-        if (accessToken) {
-          try {
-            const models = await discoverModels(accessToken, cacheDir, { baseURL: apiBaseURL })
-            return modelsToConfig(models)
-          } catch {
-            // discovery failed — leave the list empty
-          }
+    if (cached?.models.length && isCacheFresh(cached)) {
+      return modelsToConfig(cached.models)
+    }
+
+    // Config runs before auth.loader and has no getAuth(); read the durable
+    // store (normally the same source getAuth() uses). Refresh missing, expired,
+    // or old-schema caches here so this process materializes the new model set.
+    const auth = await authFromStore()
+    if (auth) {
+      const accessToken = await resolveAccessToken(auth)
+      if (accessToken) {
+        try {
+          const models = await discoverModels(accessToken, cacheDir, { baseURL: apiBaseURL })
+          return modelsToConfig(models)
+        } catch {
+          // No usable cache and discovery failed — leave the list empty.
         }
       }
-      return {}
     }
-    return modelsToConfig(cached.models)
+
+    // Preserve stale-on-failure/offline behavior for an existing cache.
+    return cached?.models.length ? modelsToConfig(cached.models) : {}
   }
 
   return {
+    async "chat.params"(hookInput, output) {
+      if (hookInput.model.providerID !== CURSOR_PROVIDER_ID) return
+      // OpenCode's compaction pipeline invokes the LLM with agent="compaction".
+      // Carry that stable runtime fact into LanguageModelV3 providerOptions so
+      // the provider never has to guess from an empty tool list.
+      if (hookInput.agent === "compaction") {
+        output.options[CURSOR_COMPACTION_OPTION] = true
+      }
+    },
+
     async config(cfg: Config) {
       cfg.provider ??= {}
       const models = await loadModels()
